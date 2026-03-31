@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -342,18 +343,25 @@ func calculateEventTimeout(idleCycles int) (time.Duration, error) {
 		}
 
 		timeout := base
-		for i := 0; i < idleCycles; i++ {
-			// Cap early to prevent int64 overflow at high idle counts.
-			// time.Duration is int64 nanoseconds; multiplying repeatedly
-			// without a guard wraps negative around idle ~62+ (30s base,
-			// mult=2). Check before each multiply.
-			if maxDur > 0 && timeout >= maxDur {
-				return maxDur, nil
-			}
-			timeout *= time.Duration(awaitEventBackoffMult)
+		mult := time.Duration(awaitEventBackoffMult)
+		// Hard ceiling: 1 hour. Prevents unbounded growth when no max is set.
+		hardMax := 1 * time.Hour
+		if maxDur > 0 && maxDur < hardMax {
+			hardMax = maxDur
 		}
-		if maxDur > 0 && timeout > maxDur {
-			return maxDur, nil
+		for i := 0; i < idleCycles; i++ {
+			if timeout >= hardMax {
+				return hardMax, nil
+			}
+			// Overflow guard: if multiplying would exceed int64 range,
+			// clamp to hardMax instead of wrapping negative.
+			if mult > 0 && timeout > math.MaxInt64/mult {
+				return hardMax, nil
+			}
+			timeout *= mult
+		}
+		if timeout > hardMax {
+			return hardMax, nil
 		}
 		return timeout, nil
 	}
