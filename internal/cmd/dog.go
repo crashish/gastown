@@ -1206,8 +1206,13 @@ func runDogDispatch(cmd *cobra.Command, args []string) error {
 	// Verify the work state write is readable. A read-back failure here
 	// indicates state corruption, not a timing race.
 	// See: github.com/steveyegge/gastown/issues/2748
+	// Skip verify if session start already failed — we intentionally rolled
+	// back the work assignment, so empty Work is expected, not a race.
 	result.WorkConfirmed = false
-	if d, getErr := mgr.Get(targetDog.Name); getErr != nil {
+	if !result.SessionStarted {
+		// Session failed to start, work was rolled back intentionally.
+		// No verify needed — the warning was already emitted above.
+	} else if d, getErr := mgr.Get(targetDog.Name); getErr != nil {
 		warn := fmt.Sprintf("dog dispatch: could not verify work assignment for %s: %v", targetDog.Name, getErr)
 		result.Warnings = append(result.Warnings, warn)
 		if !dogDispatchJSON {
