@@ -527,16 +527,19 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			}
 		}
 
-		// Check no_merge or review_only flags on the hooked bead. When set,
+		// Check review_only flag on the hooked bead. When set,
 		// this is a non-code task (email, research, analysis, PRD review)
 		// where zero commits is expected.
 		// Must be checked before the zero-commit guard below (GH#2496, gt-kvf).
-		isNoMergeTask := false
+		// NOTE: no_merge no longer bypasses — it means "skip merge queue" not
+		// "skip commit verification." Polecats false-completed code tasks that
+		// had no_merge set. (gt-yx6)
+		isReviewOnlyTask := false
 		if issueID != "" {
 			noMergeBd := beads.New(cwd)
 			if noMergeIssue, showErr := noMergeBd.Show(issueID); showErr == nil {
-				if af := beads.ParseAttachmentFields(noMergeIssue); af != nil && (af.NoMerge || af.ReviewOnly) {
-					isNoMergeTask = true
+				if af := beads.ParseAttachmentFields(noMergeIssue); af != nil && af.ReviewOnly {
+					isReviewOnlyTask = true
 				}
 			}
 		}
@@ -546,11 +549,11 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		// implementation without writing code (gastown#1484, beads#emma).
 		// The --cleanup-status=clean escape is preserved for legitimate report-only
 		// tasks (audits, reviews) that the formula explicitly directs to use it.
-		// no_merge/review_only tasks (GH#2496, gt-kvf) also bypass: non-code work has no commits by design.
+		// review_only tasks (GH#2496, gt-kvf) bypass: non-code work has no commits by design.
 		// IMPORTANT: The error message must NOT mention --cleanup-status=clean.
 		// LLM agents read error messages and self-bypass (the original bug).
 		if aheadCount == 0 {
-			if os.Getenv("GT_POLECAT") != "" && doneCleanupStatus != "clean" && !isNoMergeTask {
+			if os.Getenv("GT_POLECAT") != "" && doneCleanupStatus != "clean" && !isReviewOnlyTask {
 				// Before failing, check whether commits exist on the remote feature branch.
 				// After a polecat pushes to origin/<feature-branch> and submits an MR,
 				// if master advances (e.g., other MRs land), the feature branch is no
@@ -559,7 +562,19 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 				branchPushedWithWork := false
 				if branch != defaultBranch {
 					pushed, unpushed, pushErr := g.BranchPushedToRemote(branch, "origin")
-					branchPushedWithWork = pushErr == nil && pushed && unpushed == 0
+					if pushErr == nil && pushed && unpushed == 0 {
+						// Branch exists on remote with no unpushed commits, but verify
+						// the remote branch actually has feature commits ahead of default.
+						// A stale branch from a previous (failed) polecat attempt may exist
+						// on the remote with zero real commits (only beads metadata or empty).
+						// Without this check, polecats false-complete by inheriting the stale
+						// branch's "pushed" status. (gastown#gt-yx6)
+						remoteBranch := "origin/" + branch
+						remoteAhead, raErr := g.CommitsAhead(originDefault, remoteBranch)
+						if raErr == nil && remoteAhead > 0 {
+							branchPushedWithWork = true
+						}
+					}
 				}
 				if !branchPushedWithWork {
 					return fmt.Errorf("cannot complete: no commits on branch ahead of %s\n"+
@@ -571,7 +586,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			}
 
 			// Non-polecat (crew/mayor), polecat with --cleanup-status=clean
-			// (report-only tasks like audits/reviews), or no_merge polecat
+			// (report-only tasks like audits/reviews), or review_only polecat
 			// (non-code tasks like email/research per GH#2496):
 			// zero commits is valid.
 			fmt.Printf("%s Branch has no commits ahead of %s\n", style.Bold.Render("→"), originDefault)
