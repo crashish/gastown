@@ -1,0 +1,22 @@
+# Dolt SQL server config — VPS-B deployment.
+#
+# Install as /opt/gastown/.dolt-data/config.yaml owned by the dolt user.
+# Mirrors the local tuning (managed by `gt dolt start`) but pins the listener
+# to the WG interface so we never accidentally expose 3307 on the public NIC.
+
+log_level: warning
+
+listener:
+  host: 10.10.0.3                # WG interface only; do NOT bind 0.0.0.0.
+  port: 3307
+  max_connections: 1000
+  read_timeout_millis: 300000
+  write_timeout_millis: 300000
+
+data_dir: /opt/gastown/.dolt-data
+
+behavior:
+  dolt_transaction_commit: false
+  auto_gc_behavior:
+    enable: true
+    archive_level: 1
