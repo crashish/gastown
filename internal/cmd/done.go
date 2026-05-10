@@ -1853,6 +1853,40 @@ func updateAgentStateOnDone(cwd, townRoot, exitType, issueID string) {
 				goto doneStateUpdate
 			}
 
+			// CRITICAL: Verify branch has commits before closing (hq-aamj8).
+			// Polecats were closing beads without any code changes. Check if commits exist
+			// on the branch compared to main. Only verify if we have working directory access.
+			if cwdAvailable {
+				defaultBranch := "main"
+				if rigCfg, rcErr := rig.LoadRigConfig(filepath.Join(townRoot, rigName)); rcErr == nil && rigCfg.DefaultBranch != "" {
+					defaultBranch = rigCfg.DefaultBranch
+				}
+
+				// Check for commits on the feature branch
+				var aheadCount int
+				if g != nil {
+					ahead, commErr := g.CommitsAhead("origin/"+defaultBranch, "HEAD")
+					if commErr == nil {
+						aheadCount = ahead
+					}
+				}
+
+				// For polecats (not review-only tasks), block closure if no commits
+				isReviewOnly := false
+				if af := beads.ParseAttachmentFields(hookedBead); af != nil && af.ReviewOnly {
+					isReviewOnly = true
+				}
+
+				if aheadCount == 0 && os.Getenv("GT_POLECAT") != "" && !isReviewOnly {
+					// Polecats must have commits to close the bead
+					style.PrintWarning("cannot close bead %s: no commits on branch ahead of %s", hookedBeadID, defaultBranch)
+					fmt.Fprintf(os.Stderr, "Polecats must write code to close work beads.\n")
+					fmt.Fprintf(os.Stderr, "If work was already fixed upstream: gt done --status DEFERRED\n")
+					fmt.Fprintf(os.Stderr, "If you're blocked: gt done --status ESCALATED\n")
+					goto doneStateUpdate
+				}
+			}
+
 			// BUG FIX: Close attached molecule (wisp) BEFORE closing hooked bead.
 			// When using formula-on-bead (gt sling formula --on bead), the base bead
 			// has attached_molecule pointing to the wisp. Without this fix, gt done
