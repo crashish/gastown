@@ -208,16 +208,23 @@ func wrapBdCmdTimeout(ctx context.Context, err error) error {
 	return err
 }
 
-// resolvedArgs returns the final args, stripping --allow-stale if bd doesn't support it.
+// resolvedArgs returns the final args, normalizing --allow-stale to the global
+// flag position when bd supports it and stripping it when bd does not.
 func (b *bdCmd) resolvedArgs() []string {
-	if beads.BdSupportsAllowStale() {
+	filtered := make([]string, 0, len(b.args))
+	requestedAllowStale := false
+	for _, a := range b.args {
+		if a == "--allow-stale" {
+			requestedAllowStale = true
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	if !requestedAllowStale {
 		return b.args
 	}
-	filtered := make([]string, 0, len(b.args))
-	for _, a := range b.args {
-		if a != "--allow-stale" {
-			filtered = append(filtered, a)
-		}
+	if beads.BdSupportsAllowStale() {
+		return append([]string{"--allow-stale"}, filtered...)
 	}
 	return filtered
 }

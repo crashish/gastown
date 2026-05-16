@@ -154,6 +154,10 @@ set -e
 echo "$(pwd)|${BEADS_DIR:-}|$*" >> "${BD_LOG}"
 cmd="$1"
 shift || true
+if [ "$cmd" = "--allow-stale" ]; then
+  cmd="$1"
+  shift || true
+fi
 case "$cmd" in
   show)
     echo '[{"title":"Test issue","status":"open","assignee":"","description":""}]'
@@ -186,6 +190,10 @@ setlocal enableextensions
 echo %CD%^|%BEADS_DIR%^|%*>>"%BD_LOG%"
 set "cmd=%1"
 set "sub=%2"
+if "%cmd%"=="--allow-stale" (
+  set "cmd=%2"
+  set "sub=%3"
+)
 if "%cmd%"=="show" (
   echo [{"title":"Test issue","status":"open","assignee":"","description":""}]
   exit /b 0
@@ -1711,6 +1719,82 @@ exit /b 0
 			// Some other error - might be expected in dry-run mode
 			t.Logf("gt sling returned error (may be expected in test): %v", err)
 		}
+	}
+}
+
+func TestBdCmdStripsUnsupportedAllowStale(t *testing.T) {
+	beads.ResetBdAllowStaleCacheForTest()
+	t.Cleanup(beads.ResetBdAllowStaleCacheForTest)
+
+	townRoot := t.TempDir()
+	binDir := filepath.Join(townRoot, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("mkdir binDir: %v", err)
+	}
+
+	logPath := filepath.Join(townRoot, "bd.log")
+	bdScript := `#!/bin/sh
+printf '%s\n' "$*" >> "$BD_LOG"
+for arg in "$@"; do
+  if [ "$arg" = "--allow-stale" ]; then
+    echo "Error: unknown flag: --allow-stale" >&2
+    exit 1
+  fi
+done
+case "$1" in
+  show)
+    echo '[{"title":"Routed bead","status":"open","assignee":""}]'
+    ;;
+  version)
+    echo "bd version 1.0.3"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+exit 0
+`
+	bdScriptWindows := `@echo off
+>>"%BD_LOG%" echo %*
+for %%A in (%*) do if "%%~A"=="--allow-stale" (
+  echo Error: unknown flag: --allow-stale 1>&2
+  exit /b 1
+)
+if "%1"=="show" (
+  echo [{"title":"Routed bead","status":"open","assignee":""}]
+  exit /b 0
+)
+if "%1"=="version" (
+  echo bd version 1.0.3
+  exit /b 0
+)
+exit /b 1
+`
+	_ = writeBDStub(t, binDir, bdScript, bdScriptWindows)
+
+	t.Setenv("BD_LOG", logPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out, err := BdCmd("show", "gt-rca-epic-routing.3", "--json", "--allow-stale").
+		Dir(townRoot).
+		Output()
+	if err != nil {
+		t.Fatalf("BdCmd show with unsupported --allow-stale failed: %v", err)
+	}
+	if !strings.Contains(string(out), "Routed bead") {
+		t.Fatalf("BdCmd show output = %q, want routed bead JSON", string(out))
+	}
+
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read bd log: %v", err)
+	}
+	log := string(logBytes)
+	if strings.Contains(log, "show gt-rca-epic-routing.3 --json --allow-stale") {
+		t.Fatalf("BdCmd passed unsupported --allow-stale to show command:\n%s", log)
+	}
+	if !strings.Contains(log, "show gt-rca-epic-routing.3 --json") {
+		t.Fatalf("BdCmd did not run expected show command:\n%s", log)
 	}
 }
 
