@@ -3640,6 +3640,86 @@ func TestDefaultConfig_InvalidPortIgnored(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_ConfigYAMLBeatsDaemonJSON(t *testing.T) {
+	townRoot := t.TempDir()
+	dataDir := filepath.Join(townRoot, ".dolt-data")
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "config.yaml"), []byte("listener:\n  port: 4407\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	mayorDir := filepath.Join(townRoot, "mayor")
+	if err := os.MkdirAll(mayorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mayorDir, "daemon.json"), []byte(`{"env":{"GT_DOLT_PORT":"5507"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	config := DefaultConfig(townRoot)
+	if config.Port != 4407 {
+		t.Errorf("Port = %d, want config.yaml port 4407", config.Port)
+	}
+}
+
+func TestDefaultConfig_DaemonJSONFallbackWithoutConfigOrEnv(t *testing.T) {
+	townRoot := t.TempDir()
+	t.Setenv("GT_DOLT_PORT", "")
+	mayorDir := filepath.Join(townRoot, "mayor")
+	if err := os.MkdirAll(mayorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mayorDir, "daemon.json"), []byte(`{"env":{"GT_DOLT_PORT":"5507"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	config := DefaultConfig(townRoot)
+	if config.Port != 5507 {
+		t.Errorf("Port = %d, want daemon.json port 5507", config.Port)
+	}
+}
+
+func TestDefaultConfig_IgnoreConfigUsesEnvPort(t *testing.T) {
+	townRoot := t.TempDir()
+	dataDir := filepath.Join(townRoot, ".dolt-data")
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "config.yaml"), []byte("listener:\n  port: 4407\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GT_DOLT_IGNORE_CONFIG", "1")
+	t.Setenv("GT_DOLT_PORT", "5507")
+
+	config := DefaultConfig(townRoot)
+	if config.Port != 5507 {
+		t.Errorf("Port = %d, want env port 5507 when config ignored", config.Port)
+	}
+}
+
+func TestDefaultConfig_ManagedDefaultsAndEnvOverrides(t *testing.T) {
+	townRoot := t.TempDir()
+
+	config := DefaultConfig(townRoot)
+	if config.EventScheduler != "OFF" {
+		t.Errorf("EventScheduler = %q, want OFF", config.EventScheduler)
+	}
+	if config.DoltStatsEnabled != "0" {
+		t.Errorf("DoltStatsEnabled = %q, want 0", config.DoltStatsEnabled)
+	}
+
+	t.Setenv("GT_DOLT_STATS_ENABLED", "omit")
+	t.Setenv("GT_DOLT_EVENT_SCHEDULER", "omit")
+	config = DefaultConfig(townRoot)
+	if config.DoltStatsEnabled != "omit" {
+		t.Errorf("DoltStatsEnabled = %q, want omit", config.DoltStatsEnabled)
+	}
+	if config.EventScheduler != "omit" {
+		t.Errorf("EventScheduler = %q, want omit", config.EventScheduler)
+	}
+}
+
 func TestBuildDoltSQLCmd_Local(t *testing.T) {
 	config := &Config{
 		Host:    "",

@@ -39,3 +39,15 @@ func TestCheckDolt(t *testing.T) {
 
 	t.Logf("CheckDolt: status=%d, version=%s", status, version)
 }
+
+func TestMinDoltVersionBoundary(t *testing.T) {
+	if CompareVersions("1.83.9", MinDoltVersion) >= 0 {
+		t.Fatalf("1.83.9 should be below MinDoltVersion %s", MinDoltVersion)
+	}
+	if CompareVersions("1.84.0", MinDoltVersion) != 0 {
+		t.Fatalf("1.84.0 should equal MinDoltVersion %s", MinDoltVersion)
+	}
+	if CompareVersions("2.0.3", MinDoltVersion) <= 0 {
+		t.Fatalf("2.0.3 should be above MinDoltVersion %s", MinDoltVersion)
+	}
+}

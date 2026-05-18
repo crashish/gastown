@@ -353,9 +353,13 @@ func DefaultConfig(townRoot string) *Config {
 	} else if port := readPortFromConfigYAML(townRoot); port > 0 {
 		config.Port = port
 		portFromConfig = true
-	} else if p := os.Getenv("GT_DOLT_PORT"); p != "" {
-		if port, err := strconv.Atoi(p); err == nil {
-			config.Port = port
+	}
+	if !portFromConfig {
+		p := os.Getenv("GT_DOLT_PORT")
+		if p != "" {
+			if port, err := strconv.Atoi(p); err == nil {
+				config.Port = port
+			}
 		}
 	}
 	if scheduler, ok := os.LookupEnv("GT_DOLT_EVENT_SCHEDULER"); ok {
@@ -1470,6 +1474,7 @@ func writeServerConfig(config *Config, configPath string) error {
 # Do not edit manually; changes are overwritten on each server start.
 # To customize, set Gas Town environment variables:
 #   GT_DOLT_PORT, GT_DOLT_HOST, GT_DOLT_USER, GT_DOLT_PASSWORD, GT_DOLT_LOGLEVEL
+#   GT_DOLT_EVENT_SCHEDULER (OFF, ON, omit), GT_DOLT_STATS_ENABLED (0, 1, omit)
 
 log_level: %s
 
