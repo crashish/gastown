@@ -1856,14 +1856,17 @@ func updateAgentStateOnDone(cwd, townRoot, exitType, issueID string) {
 			// CRITICAL: Verify branch has commits before closing (hq-aamj8).
 			// Polecats were closing beads without any code changes. Check if commits exist
 			// on the branch compared to main. Only verify if we have working directory access.
+			cwdAvailable := cwd != ""
 			if cwdAvailable {
+				rigPath := filepath.Join(townRoot, ctx.Rig)
 				defaultBranch := "main"
-				if rigCfg, rcErr := rig.LoadRigConfig(filepath.Join(townRoot, rigName)); rcErr == nil && rigCfg.DefaultBranch != "" {
+				if rigCfg, rcErr := rig.LoadRigConfig(rigPath); rcErr == nil && rigCfg.DefaultBranch != "" {
 					defaultBranch = rigCfg.DefaultBranch
 				}
 
 				// Check for commits on the feature branch
 				var aheadCount int
+				g := git.NewGit(cwd)
 				if g != nil {
 					ahead, commErr := g.CommitsAhead("origin/"+defaultBranch, "HEAD")
 					if commErr == nil {

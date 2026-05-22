@@ -201,7 +201,21 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 				return nil, fmt.Errorf("getting idle polecat after reuse: %w", err)
 			}
 			if err := verifyWorktreeExists(polecatObj.ClonePath); err != nil {
-				return nil, fmt.Errorf("worktree verification failed for reused %s: %w", polecatName, err)
+				fmt.Printf("  Worktree verification failed for reused polecat %s: %v, attempting auto-repair...\n", polecatName, err)
+				if _, repairErr := polecatMgr.RepairWorktreeWithOptions(polecatName, true, addOpts); repairErr != nil {
+					fmt.Printf("  Auto-repair failed for %s: %v, aborting reuse\n", polecatName, repairErr)
+					return nil, fmt.Errorf("worktree verification and repair both failed for reused %s: %w", polecatName, repairErr)
+				}
+				// Refresh polecat object after repair (path may have changed)
+				polecatObj, err = polecatMgr.Get(polecatName)
+				if err != nil {
+					return nil, fmt.Errorf("getting polecat after repair: %w", err)
+				}
+				// Final re-verification after repair
+				if err := verifyWorktreeExists(polecatObj.ClonePath); err != nil {
+					return nil, fmt.Errorf("worktree verification failed even after repair for %s: %w", polecatName, err)
+				}
+				fmt.Printf("  Successfully auto-repaired worktree for %s\n", polecatName)
 			}
 
 			polecatSessMgr := polecat.NewSessionManager(t, r)
@@ -305,10 +319,24 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 	// Verify worktree was actually created (fixes #1070)
 	// The identity bead may exist but worktree creation can fail silently
 	if err := verifyWorktreeExists(polecatObj.ClonePath); err != nil {
-		// Clean up the partial state before returning error
-		_ = polecatMgr.Remove(polecatName, true) // force=true to clean up partial state
-		return nil, fmt.Errorf("worktree verification failed for %s: %w\nHint: try 'gt polecat nuke %s/%s --force' to clean up",
-			polecatName, err, rigName, polecatName)
+		fmt.Printf("  Worktree verification failed for allocated polecat %s: %v, attempting auto-repair...\n", polecatName, err)
+		if _, repairErr := polecatMgr.RepairWorktreeWithOptions(polecatName, true, addOpts); repairErr != nil {
+			fmt.Printf("  Auto-repair failed for %s: %v, cleaning up\n", polecatName, repairErr)
+			_ = polecatMgr.Remove(polecatName, true) // force=true to clean up partial state
+			return nil, fmt.Errorf("worktree verification and repair both failed for %s: %w\nHint: try 'gt polecat nuke %s/%s --force' to clean up",
+				polecatName, repairErr, rigName, polecatName)
+		}
+		// Refresh polecat object after repair (path may have changed)
+		polecatObj, err = polecatMgr.Get(polecatName)
+		if err != nil {
+			return nil, fmt.Errorf("getting polecat after repair: %w", err)
+		}
+		// Final re-verification after repair
+		if err := verifyWorktreeExists(polecatObj.ClonePath); err != nil {
+			_ = polecatMgr.Remove(polecatName, true)
+			return nil, fmt.Errorf("worktree verification failed even after repair for %s: %w", polecatName, err)
+		}
+		fmt.Printf("  Successfully auto-repaired worktree for %s\n", polecatName)
 	}
 
 	// Get session manager for session name (session start is deferred)
