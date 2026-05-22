@@ -335,12 +335,21 @@ func AgentEnv(cfg AgentEnvConfig) map[string]string {
 
 	// Propagate Dolt server host so bd doesn't fall back to 127.0.0.1 when
 	// the server runs on a remote machine (e.g., mini2 over Tailscale).
-	if _, ok := env["BEADS_DOLT_SERVER_HOST"]; !ok {
-		if v := os.Getenv("BEADS_DOLT_SERVER_HOST"); v != "" {
-			env["BEADS_DOLT_SERVER_HOST"] = v
-		} else if v := os.Getenv("GT_DOLT_HOST"); v != "" {
-			env["BEADS_DOLT_SERVER_HOST"] = v
+	// Resolution order: env var (GT_DOLT_HOST or BEADS_DOLT_SERVER_HOST) → daemon.json → localhost (implicit)
+	var doltHost string
+	if v := os.Getenv("GT_DOLT_HOST"); v != "" {
+		doltHost = v
+	} else if v := os.Getenv("BEADS_DOLT_SERVER_HOST"); v != "" {
+		doltHost = v
+	} else if cfg.TownRoot != "" {
+		// Fallback: read from daemon.json (dolt_server.host)
+		if h := resolveDoltHost(cfg.TownRoot); h != "" {
+			doltHost = h
 		}
+	}
+	if doltHost != "" {
+		env["GT_DOLT_HOST"] = doltHost
+		env["BEADS_DOLT_SERVER_HOST"] = doltHost
 	}
 
 	// Pass through cloud API credentials and provider configuration from the parent shell.
@@ -471,6 +480,26 @@ func resolveDoltPort(townRoot string) int {
 	}
 
 	return 0
+}
+
+// resolveDoltHost determines the Dolt server host for the given town root.
+// Reads from daemon.json (dolt_server.host section).
+// Returns empty string if not configured (will default to localhost implicitly).
+func resolveDoltHost(townRoot string) string {
+	daemonJSONPath := filepath.Join(townRoot, "mayor", "daemon.json")
+	if data, err := os.ReadFile(daemonJSONPath); err == nil {
+		var daemonConfig struct {
+			Patrols map[string]interface{} `json:"patrols"`
+		}
+		if err := json.Unmarshal(data, &daemonConfig); err == nil {
+			if doltServer, ok := daemonConfig.Patrols["dolt_server"].(map[string]interface{}); ok {
+				if host, ok := doltServer["host"].(string); ok && host != "" {
+					return host
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // parsePortFromConfigYAML extracts the listener port from a Dolt config.yaml
