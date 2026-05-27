@@ -14,11 +14,11 @@ import (
 
 const (
 	// bdReadTimeout is the timeout for bd read operations (list, show, query).
-	// 60s accommodates concurrent agent load where multiple bd processes compete
-	// for Dolt locks and memory (was 30s, caused signal:killed under contention).
-	bdReadTimeout = 60 * time.Second
+	// 120s accommodates slow gt mail inbox scans across 10 databases over WireGuard
+	// (was 30s, then 60s — both caused signal:killed under normal load).
+	bdReadTimeout = 120 * time.Second
 	// bdWriteTimeout is the timeout for bd write operations (create, close, label, reopen).
-	bdWriteTimeout = 60 * time.Second
+	bdWriteTimeout = 120 * time.Second
 )
 
 // bdError represents an error from running a bd command.

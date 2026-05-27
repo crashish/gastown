@@ -54,7 +54,7 @@ func NewMailboxWithBeadsDirAndStore(address, workDir, beadsDir string, store bea
 
 // mailStoreCtx returns a context with a standard timeout for mail store operations.
 func mailStoreCtx() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), 30*time.Second)
+	return context.WithTimeout(context.Background(), 120*time.Second)
 }
 
 // storeListFromDir queries messages using the in-process store.
