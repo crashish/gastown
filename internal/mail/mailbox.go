@@ -293,31 +293,33 @@ func (m *Mailbox) listWispMessages(beadsDir string, identities []string, seen ma
 }
 
 // queryWispMessagesByAssignee queries wisps table for messages assigned to identity.
+// Removed description from SELECT to avoid pulling heavy TEXT column for listing.
 func (m *Mailbox) queryWispMessagesByAssignee(beadsDir, identity string) []BeadsMessage {
 	query := fmt.Sprintf(
-		"SELECT w.id, w.title, w.description, w.status, w.priority, w.assignee, w.created_at, w.updated_at, "+
+		"SELECT w.id, w.title, w.status, w.priority, w.assignee, w.created_at, w.updated_at, "+
 			"GROUP_CONCAT(al.label) as labels_csv "+
 			"FROM wisps w "+
 			"JOIN wisp_labels l ON w.id = l.issue_id "+
 			"JOIN wisp_labels al ON w.id = al.issue_id "+
 			"WHERE l.label = 'gt:message' AND w.status IN ('open', 'hooked') AND w.assignee = '%s' "+
-			"GROUP BY w.id, w.title, w.description, w.status, w.priority, w.assignee, w.created_at, w.updated_at",
+			"GROUP BY w.id, w.title, w.status, w.priority, w.assignee, w.created_at, w.updated_at",
 		escapeSQLString(identity))
 	return m.runWispSQL(beadsDir, query)
 }
 
 // queryWispMessagesByCC queries wisps table for messages where identity is CC'd.
+// Removed description from SELECT to avoid pulling heavy TEXT column for listing.
 func (m *Mailbox) queryWispMessagesByCC(beadsDir, identity string) []BeadsMessage {
 	ccLabel := "cc:" + identity
 	query := fmt.Sprintf(
-		"SELECT w.id, w.title, w.description, w.status, w.priority, w.assignee, w.created_at, w.updated_at, "+
+		"SELECT w.id, w.title, w.status, w.priority, w.assignee, w.created_at, w.updated_at, "+
 			"GROUP_CONCAT(al.label) as labels_csv "+
 			"FROM wisps w "+
 			"JOIN wisp_labels l1 ON w.id = l1.issue_id "+
 			"JOIN wisp_labels l2 ON w.id = l2.issue_id "+
 			"JOIN wisp_labels al ON w.id = al.issue_id "+
 			"WHERE l1.label = 'gt:message' AND l2.label = '%s' AND w.status IN ('open', 'hooked') "+
-			"GROUP BY w.id, w.title, w.description, w.status, w.priority, w.assignee, w.created_at, w.updated_at",
+			"GROUP BY w.id, w.title, w.status, w.priority, w.assignee, w.created_at, w.updated_at",
 		escapeSQLString(ccLabel))
 	return m.runWispSQL(beadsDir, query)
 }

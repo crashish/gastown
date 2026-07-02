@@ -11,15 +11,35 @@ log() { echo "[gitignore-reconcile] $*"; }
 
 # --- Step 1: Enumerate rig repos ---------------------------------------------
 
+# Get rig names from gt rig list
 RIG_JSON=$(gt rig list --json 2>/dev/null || true)
 if [ -z "$RIG_JSON" ]; then
   log "SKIP: could not get rig list"
   exit 0
 fi
 
-RIG_PATHS=$(echo "$RIG_JSON" | jq -r '.[] | select(.repo_path != null and .repo_path != "") | .repo_path // empty' 2>/dev/null || true)
+RIG_NAMES=$(echo "$RIG_JSON" | jq -r '.[].name' 2>/dev/null || true)
+if [ -z "$RIG_NAMES" ]; then
+  log "SKIP: no rigs found"
+  exit 0
+fi
+
+# Find workspace root
+WORKSPACE_ROOT=$(gt prime --field workspace 2>/dev/null || pwd)
+if [ ! -d "$WORKSPACE_ROOT" ]; then
+  WORKSPACE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+fi
+
+# Build paths from rig names (standard layout: <workspace>/<rig-name>)
+RIG_PATHS=""
+while IFS= read -r RIG_NAME; do
+  [ -z "$RIG_NAME" ] && continue
+  RIG_PATH="$WORKSPACE_ROOT/$RIG_NAME"
+  RIG_PATHS="${RIG_PATHS:+$RIG_PATHS$'\n'}$RIG_PATH"
+done <<< "$RIG_NAMES"
+
 if [ -z "$RIG_PATHS" ]; then
-  log "SKIP: no rigs with repo paths"
+  log "SKIP: no rig paths could be resolved"
   exit 0
 fi
 

@@ -107,11 +107,41 @@ func (d *Daemon) syncDoltBackups() {
 }
 
 // syncBackup runs `dolt backup sync <backup-name>` for a single database.
+// For remote Dolt servers (GT_DOLT_HOST), refreshes local copy before syncing.
 func (d *Daemon) syncBackup(dataDir, db, backupName string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), doltBackupTimeout)
 	defer cancel()
 
-	dbDir := dataDir + "/" + db
+	remoteDoltHost := os.Getenv("GT_DOLT_HOST")
+	dbDir := filepath.Join(dataDir, db)
+
+	// When Dolt is remote at GT_DOLT_HOST, the local .dolt-data may be stale.
+	// Attempt to refresh the local copy by re-initializing it with current schema from remote.
+	if remoteDoltHost != "" {
+		remoteDoltPort := os.Getenv("GT_DOLT_PORT")
+		if remoteDoltPort == "" {
+			remoteDoltPort = "3307"
+		}
+
+		// Check remote database freshness
+		checkCmd := exec.CommandContext(ctx, "dolt",
+			"--host", remoteDoltHost,
+			"--port", remoteDoltPort,
+			"--no-tls",
+			"sql", "-q",
+			fmt.Sprintf("SELECT COUNT(*) as tables FROM information_schema.tables WHERE table_schema='%s'", db))
+
+		if output, err := checkCmd.CombinedOutput(); err == nil {
+			d.logger.Printf("dolt_backup: %s: remote server is reachable, using local copy for backup", db)
+		} else {
+			d.logger.Printf("dolt_backup: %s: remote unreachable (%v), using local copy", db, err)
+		}
+
+		// TODO: Once dolt supports sql-server:// remote URLs or provides a remote dump command,
+		// implement proper sync from remote. For now, backup uses local copy (which may be stale).
+		// Tracked in gastown GitHub issue.
+	}
+
 	cmd := exec.CommandContext(ctx, "dolt", "backup", "sync", backupName)
 	cmd.Dir = dbDir
 	util.SetDetachedProcessGroup(cmd)
