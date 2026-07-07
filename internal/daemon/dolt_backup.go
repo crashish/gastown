@@ -131,7 +131,7 @@ func (d *Daemon) syncBackup(dataDir, db, backupName string) error {
 			"sql", "-q",
 			fmt.Sprintf("SELECT COUNT(*) as tables FROM information_schema.tables WHERE table_schema='%s'", db))
 
-		if output, err := checkCmd.CombinedOutput(); err == nil {
+		if _, err := checkCmd.CombinedOutput(); err == nil {
 			d.logger.Printf("dolt_backup: %s: remote server is reachable, using local copy for backup", db)
 		} else {
 			d.logger.Printf("dolt_backup: %s: remote unreachable (%v), using local copy", db, err)
