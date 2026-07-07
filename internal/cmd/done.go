@@ -623,7 +623,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 						if noMRCommitSHA != "" {
 							closeReason = fmt.Sprintf("%s\nskip_verify: true\ntarget_branch: %s\ncommit_sha: %s", closeReason, defaultBranch, noMRCommitSHA)
 						}
-					} else if !isNoMergeTask {
+					} else if !isReviewOnlyTask {
 						if verifyErr := g.VerifyPushedCommit("origin", defaultBranch, noMRCommitSHA); verifyErr != nil {
 							noteVerifiedPushFailure(cwd, issueID, defaultBranch, noMRCommitSHA, verifyErr)
 							return fmt.Errorf("cannot close no-MR code bead: %w", verifyErr)
