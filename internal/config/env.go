@@ -333,8 +333,23 @@ func AgentEnv(cfg AgentEnvConfig) map[string]string {
 		env["BEADS_DOLT_AUTO_START"] = "0"
 	}
 
-	// Propagate Dolt server host so bd doesn't fall back to 127.0.0.1 when
-	// the server runs on a remote machine (e.g., mini2 over Tailscale).
+	// Propagate Dolt server host so agents don't fall back to 127.0.0.1 when
+	// the server runs on a remote machine (our town: 10.10.0.2 over WireGuard).
+	//
+	// Reconciled with upstream v1.2.1 (env=catchup/v1.2.1-local-patches):
+	// Upstream (commit 32507e2e) already forwards GT_DOLT_HOST/BEADS_DOLT_SERVER_HOST
+	// from the process env into env["BEADS_DOLT_SERVER_HOST"]. We keep the two
+	// deltas upstream lacks, both load-bearing for a REMOTE-Dolt town:
+	//   (1) We ALSO set env["GT_DOLT_HOST"]. AgentEnv is an isolated allowlist
+	//       env (GT_DOLT_HOST is NOT in the passthrough list below), so without
+	//       this the spawned dog/agent shell loses GT_DOLT_HOST entirely. Dogs
+	//       probe Dolt via `dolt --host "$GT_DOLT_HOST"`, and gt reaper.go /
+	//       daemon/dolt_backup.go resolve the host from GT_DOLT_HOST *first*
+	//       (then BEADS_DOLT_SERVER_HOST). Omitting it reintroduces the false
+	//       localhost escalations this fix (hq-drlr0 et al.) closed.
+	//   (2) daemon.json (dolt_server.host) fallback for when neither env var is
+	//       set (e.g. a daemon started without the Dolt env exported).
+	// Mirrors the GT_DOLT_PORT/BEADS_DOLT_PORT sibling pattern above.
 	// Resolution order: env var (GT_DOLT_HOST or BEADS_DOLT_SERVER_HOST) → daemon.json → localhost (implicit)
 	var doltHost string
 	if v := os.Getenv("GT_DOLT_HOST"); v != "" {
@@ -342,7 +357,6 @@ func AgentEnv(cfg AgentEnvConfig) map[string]string {
 	} else if v := os.Getenv("BEADS_DOLT_SERVER_HOST"); v != "" {
 		doltHost = v
 	} else if cfg.TownRoot != "" {
-		// Fallback: read from daemon.json (dolt_server.host)
 		if h := resolveDoltHost(cfg.TownRoot); h != "" {
 			doltHost = h
 		}
