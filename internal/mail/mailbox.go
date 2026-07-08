@@ -259,58 +259,69 @@ func (m *Mailbox) listFromDir(beadsDir string) ([]*Message, error) {
 // Protocol/lifecycle messages are stored as wisps by shouldBeWisp(), but bd list only
 // queries the issues table. Uses bd sql --json for full wisp data.
 func (m *Mailbox) listWispMessages(beadsDir string, identities []string, seen map[string]bool) []*Message {
+	if len(identities) == 0 {
+		return nil
+	}
 	var messages []*Message
 
-	// Query 3a: assignee match via SQL on wisps table
-	for _, id := range identities {
-		wispMsgs := m.queryWispMessagesByAssignee(beadsDir, id)
-		for _, bm := range wispMsgs {
-			if seen[bm.ID] {
-				continue
-			}
-			if bm.Status == "open" || bm.Status == "hooked" {
-				seen[bm.ID] = true
-				messages = append(messages, bm.ToMessage())
-			}
+	// Query 3a: assignee match via SQL on wisps table (single batched IN query
+	// across all identity variants instead of one query per variant — the old
+	// per-variant loop was an N+1 over the wisps table on the mail hot path).
+	for _, bm := range m.queryWispMessagesByAssignee(beadsDir, identities) {
+		if seen[bm.ID] {
+			continue
+		}
+		if bm.Status == "open" || bm.Status == "hooked" {
+			seen[bm.ID] = true
+			messages = append(messages, bm.ToMessage())
 		}
 	}
 
-	// Query 3b: CC match via SQL on wisps table
-	for _, id := range identities {
-		wispMsgs := m.queryWispMessagesByCC(beadsDir, id)
-		for _, bm := range wispMsgs {
-			if seen[bm.ID] {
-				continue
-			}
-			if bm.Status == "open" {
-				seen[bm.ID] = true
-				messages = append(messages, bm.ToMessage())
-			}
+	// Query 3b: CC match via SQL on wisps table (single batched IN query).
+	for _, bm := range m.queryWispMessagesByCC(beadsDir, identities) {
+		if seen[bm.ID] {
+			continue
+		}
+		if bm.Status == "open" {
+			seen[bm.ID] = true
+			messages = append(messages, bm.ToMessage())
 		}
 	}
 
 	return messages
 }
 
-// queryWispMessagesByAssignee queries wisps table for messages assigned to identity.
+// queryWispMessagesByAssignee queries wisps table for messages assigned to any
+// of the given identity variants in a single IN query (was one query per
+// variant — an N+1 over the wisps table on the mail hot path).
 // Removed description from SELECT to avoid pulling heavy TEXT column for listing.
-func (m *Mailbox) queryWispMessagesByAssignee(beadsDir, identity string) []BeadsMessage {
+func (m *Mailbox) queryWispMessagesByAssignee(beadsDir string, identities []string) []BeadsMessage {
+	if len(identities) == 0 {
+		return nil
+	}
 	query := fmt.Sprintf(
 		"SELECT w.id, w.title, w.status, w.priority, w.assignee, w.created_at, w.updated_at, "+
 			"GROUP_CONCAT(al.label) as labels_csv "+
 			"FROM wisps w "+
 			"JOIN wisp_labels l ON w.id = l.issue_id "+
 			"JOIN wisp_labels al ON w.id = al.issue_id "+
-			"WHERE l.label = 'gt:message' AND w.status IN ('open', 'hooked') AND w.assignee = '%s' "+
+			"WHERE l.label = 'gt:message' AND w.status IN ('open', 'hooked') AND w.assignee IN (%s) "+
 			"GROUP BY w.id, w.title, w.status, w.priority, w.assignee, w.created_at, w.updated_at",
-		escapeSQLString(identity))
+		sqlStringList(identities))
 	return m.runWispSQL(beadsDir, query)
 }
 
-// queryWispMessagesByCC queries wisps table for messages where identity is CC'd.
+// queryWispMessagesByCC queries wisps table for messages where any of the given
+// identity variants is CC'd, in a single IN query (was one query per variant).
 // Removed description from SELECT to avoid pulling heavy TEXT column for listing.
-func (m *Mailbox) queryWispMessagesByCC(beadsDir, identity string) []BeadsMessage {
-	ccLabel := "cc:" + identity
+func (m *Mailbox) queryWispMessagesByCC(beadsDir string, identities []string) []BeadsMessage {
+	if len(identities) == 0 {
+		return nil
+	}
+	ccLabels := make([]string, len(identities))
+	for i, id := range identities {
+		ccLabels[i] = "cc:" + id
+	}
 	query := fmt.Sprintf(
 		"SELECT w.id, w.title, w.status, w.priority, w.assignee, w.created_at, w.updated_at, "+
 			"GROUP_CONCAT(al.label) as labels_csv "+
@@ -318,9 +329,9 @@ func (m *Mailbox) queryWispMessagesByCC(beadsDir, identity string) []BeadsMessag
 			"JOIN wisp_labels l1 ON w.id = l1.issue_id "+
 			"JOIN wisp_labels l2 ON w.id = l2.issue_id "+
 			"JOIN wisp_labels al ON w.id = al.issue_id "+
-			"WHERE l1.label = 'gt:message' AND l2.label = '%s' AND w.status IN ('open', 'hooked') "+
+			"WHERE l1.label = 'gt:message' AND l2.label IN (%s) AND w.status IN ('open', 'hooked') "+
 			"GROUP BY w.id, w.title, w.status, w.priority, w.assignee, w.created_at, w.updated_at",
-		escapeSQLString(ccLabel))
+		sqlStringList(ccLabels))
 	return m.runWispSQL(beadsDir, query)
 }
 
@@ -382,6 +393,16 @@ func (m *Mailbox) runWispSQL(beadsDir, query string) []BeadsMessage {
 // escapeSQLString escapes single quotes for SQL string literals.
 func escapeSQLString(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
+}
+
+// sqlStringList renders values as a comma-separated list of quoted, escaped SQL
+// string literals for use inside an IN (...) clause, e.g. 'a', 'b'.
+func sqlStringList(values []string) string {
+	quoted := make([]string, len(values))
+	for i, v := range values {
+		quoted[i] = "'" + escapeSQLString(v) + "'"
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // identityVariants returns all identity formats to query.
