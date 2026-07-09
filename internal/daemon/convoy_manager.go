@@ -508,7 +508,13 @@ func (m *ConvoyManager) scan() {
 
 // findStranded runs `gt convoy stranded --json` and parses the output.
 func (m *ConvoyManager) findStranded() ([]strandedConvoyInfo, error) {
-	cmd := exec.CommandContext(m.ctx, m.gtPath, "convoy", "stranded", "--json")
+	// gt-4fw: bound the daemon's stranded scan so a hung `bd list` grandchild
+	// can't run forever holding its Dolt connection. SetProcessGroup below
+	// installs a process-group SIGKILL that fires when this context expires,
+	// reaping the grandchild (exec.CommandContext alone would only kill gt).
+	ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, m.gtPath, "convoy", "stranded", "--json")
 	cmd.Dir = m.townRoot
 	cmd.Env = bdReadOnlyRoutingEnv(m.townRoot)
 	util.SetProcessGroup(cmd)

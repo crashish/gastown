@@ -1,6 +1,7 @@
 package deacon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -182,10 +183,14 @@ func (s *ConvoyFeedState) RecordFeed() {
 
 // FindStrandedConvoys runs `gt convoy stranded --json` and parses the output.
 func FindStrandedConvoys(townRoot string) ([]StrandedConvoy, error) {
-	cmd := exec.Command("gt", "convoy", "stranded", "--json")
+	// gt-4fw: bound the deacon's stranded scan and use SetProcessGroup so the
+	// process-group SIGKILL reaps a hung `bd` grandchild when the timeout fires.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gt", "convoy", "stranded", "--json")
 	cmd.Dir = townRoot
 	cmd.Env = deaconReadOnlyRoutingEnv(townRoot)
-	util.SetDetachedProcessGroup(cmd)
+	util.SetProcessGroup(cmd)
 
 	output, err := cmd.Output()
 	if err != nil {

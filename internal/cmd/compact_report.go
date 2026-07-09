@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/style"
+	"github.com/steveyegge/gastown/internal/util"
 )
 
 var (
@@ -124,7 +126,13 @@ func runDailyDigest() error {
 	}
 
 	// Run compaction with --json to get results
-	compactOut, err := exec.Command("gt", "compact", "--json").Output()
+	// gt-4fw: bound gt compact (its `bd list --all -n 0` can hang) with a
+	// timeout + process-group kill so a hung bd grandchild is reaped.
+	compactCtx, compactCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer compactCancel()
+	compactCmd := exec.CommandContext(compactCtx, "gt", "compact", "--json")
+	util.SetProcessGroup(compactCmd)
+	compactOut, err := compactCmd.Output()
 	if err != nil {
 		return fmt.Errorf("running compaction: %w", err)
 	}

@@ -3,6 +3,7 @@ package deacon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -155,7 +156,11 @@ func ScanStaleHooks(townRoot string, cfg *StaleHookConfig) (*StaleHookScanResult
 
 // listHookedBeads returns all beads with status=hooked.
 func listHookedBeads(townRoot string) ([]*HookedBead, error) {
-	cmd := beads.Command(townRoot, townBeadsDir(townRoot), beads.ReadOnlyRouting, "list", "--status=hooked", "--json", "--flat", "--limit=0")
+	// gt-4fw: bound this unbounded (--limit=0) hooked-bead scan so it can't hang
+	// forever and tie up bd throughput.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := beads.CommandContext(ctx, townRoot, townBeadsDir(townRoot), beads.ReadOnlyRouting, "list", "--status=hooked", "--json", "--flat", "--limit=0")
 
 	output, err := cmd.Output()
 	if err != nil {
