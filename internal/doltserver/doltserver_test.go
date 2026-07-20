@@ -5091,3 +5091,83 @@ func TestHealthMetrics_CommitFreshnessFields(t *testing.T) {
 		t.Errorf("LastCommitAge = %v, want >= 0", metrics.LastCommitAge)
 	}
 }
+
+// TestServesAnyExpectedDatabase locks in the content-evidence check that guards
+// KillImposters. Regression test for hq-rj5kx: on 2026-07-12 KillImposters
+// SIGKILLed the production Dolt server because its expected data-dir was the
+// frozen .dolt-data while the live server ran from .dolt-data-live. Path
+// evidence alone must never authorize a kill; a server serving the town's
+// databases is ours regardless of which directory it was launched from.
+func TestServesAnyExpectedDatabase(t *testing.T) {
+	townDatabases := []string{"beads", "da", "fi", "gastown", "gt", "hq", "rig", "trapline"}
+
+	tests := []struct {
+		name     string
+		expected []string
+		served   []string
+		want     bool
+	}{
+		{
+			name:     "relocated production server still serves town databases",
+			expected: townDatabases,
+			served:   townDatabases,
+			want:     true,
+		},
+		{
+			name:     "genuine imposter serves none of ours",
+			expected: townDatabases,
+			served:   []string{"information_schema", "mysql", "somebodyelse"},
+			want:     false,
+		},
+		{
+			name:     "partial overlap still counts as ours",
+			expected: townDatabases,
+			served:   []string{"information_schema", "hq"},
+			want:     true,
+		},
+		{
+			name:     "case-insensitive match",
+			expected: []string{"HQ"},
+			served:   []string{"hq"},
+			want:     true,
+		},
+		{
+			name:     "empty served set is not a match",
+			expected: townDatabases,
+			served:   nil,
+			want:     false,
+		},
+		{
+			name:     "empty expected set is not a match",
+			expected: nil,
+			served:   townDatabases,
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := servesAnyExpectedDatabase(tt.expected, tt.served); got != tt.want {
+				t.Errorf("servesAnyExpectedDatabase() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestServerServesTownDatabasesFailsSafe verifies the indeterminate path: when
+// the expected database list cannot be established, the helper must return an
+// error rather than a bare false, so KillImposters declines to kill instead of
+// treating "unknown" as "imposter".
+func TestServerServesTownDatabasesFailsSafe(t *testing.T) {
+	// An empty town root has no databases on disk, so the answer is
+	// indeterminate and must surface as an error.
+	townRoot := t.TempDir()
+
+	serves, err := serverServesTownDatabases(townRoot)
+	if err == nil {
+		t.Fatal("expected an error for an indeterminate result, got nil (KillImposters would proceed to kill)")
+	}
+	if serves {
+		t.Error("serves should be false when the result is indeterminate")
+	}
+}

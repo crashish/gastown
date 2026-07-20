@@ -1242,10 +1242,57 @@ func VerifyServerDataDir(townRoot string) (bool, error) {
 	return true, nil
 }
 
+// serverServesTownDatabases reports whether the Dolt server currently answering
+// on the configured port is serving this town's databases.
+//
+// This is CONTENT evidence — what the server actually serves — as opposed to
+// PATH evidence (which data directory the process was launched from). Path
+// evidence goes stale whenever the data directory is relocated; content
+// evidence does not. It exists so that KillImposters cannot terminate a
+// legitimate server merely because it runs from an unexpected path (hq-rj5kx).
+//
+// A non-nil error means the answer could not be determined. Callers MUST treat
+// an indeterminate result as "do not kill".
+func serverServesTownDatabases(townRoot string) (bool, error) {
+	expected, err := ListDatabases(townRoot)
+	if err != nil {
+		return false, fmt.Errorf("listing expected databases: %w", err)
+	}
+	if len(expected) == 0 {
+		return false, fmt.Errorf("no expected databases found on disk")
+	}
+
+	served, _, verifyErr := VerifyDatabases(townRoot)
+	if verifyErr != nil {
+		return false, fmt.Errorf("querying served databases: %w", verifyErr)
+	}
+
+	return servesAnyExpectedDatabase(expected, served), nil
+}
+
+// servesAnyExpectedDatabase reports whether served contains at least one of the
+// expected database names, compared case-insensitively. Extracted as a pure
+// function so the kill/no-kill decision can be tested without a live server.
+func servesAnyExpectedDatabase(expected, served []string) bool {
+	servedSet := make(map[string]bool, len(served))
+	for _, db := range served {
+		servedSet[strings.ToLower(db)] = true
+	}
+	for _, db := range expected {
+		if servedSet[strings.ToLower(db)] {
+			return true
+		}
+	}
+	return false
+}
+
 // KillImposters finds and kills any dolt sql-server process on the configured
-// port that is NOT serving from the expected data directory. This handles the
-// case where another tool (e.g., bd) launched its own embedded Dolt server
-// from a different directory, hijacking the port.
+// port that is NOT serving from the expected data directory AND is not serving
+// this town's databases. Both conditions are required: a data-dir mismatch
+// alone is not sufficient evidence to kill, because the expected path is a
+// hardcoded default that goes stale when the data directory is relocated
+// (hq-rj5kx). This handles the case where another tool (e.g., bd) launched its
+// own embedded Dolt server from a different directory, hijacking the port.
 func KillImposters(townRoot string) error {
 	config := DefaultConfig(townRoot)
 	pid := findDoltServerOnPort(config.Port)
@@ -1259,6 +1306,35 @@ func KillImposters(townRoot string) error {
 
 	owner := doltProcessOwnerPath(townRoot, pid)
 	expectedDir, _ := filepath.Abs(config.DataDir)
+
+	// Path evidence says "imposter" — but path evidence ALONE must never justify
+	// killing. config.DataDir is a hardcoded default (<townRoot>/.dolt-data); a
+	// legitimate production server may run from a relocated data directory (e.g.
+	// .dolt-data-live after the 2026-07-09 migration). Path mismatch alone once
+	// made this function SIGKILL the production data plane. See hq-rj5kx.
+	//
+	// Require CONTENT evidence before terminating: if the server holding the port
+	// is serving this town's databases, it is ours, whatever path it runs from.
+	// An indeterminate answer also fails safe — we would rather leave a real
+	// imposter running (an annoyance, recoverable by hand) than kill production
+	// (a town-wide outage).
+	serves, servesErr := serverServesTownDatabases(townRoot)
+	if servesErr != nil {
+		fmt.Fprintf(os.Stderr,
+			"Refusing to kill dolt sql-server (PID %d, data-dir: %q, expected: %s): "+
+				"could not confirm it is an imposter: %v (see hq-rj5kx)\n",
+			pid, owner, expectedDir, servesErr)
+		return nil
+	}
+	if serves {
+		fmt.Fprintf(os.Stderr,
+			"Refusing to kill dolt sql-server (PID %d, data-dir: %q, expected: %s): "+
+				"data-dir does not match, but it IS serving this town's databases — "+
+				"treating as legitimate (see hq-rj5kx)\n",
+			pid, owner, expectedDir)
+		return nil
+	}
+
 	fmt.Fprintf(os.Stderr, "Killing imposter dolt sql-server (PID %d, data-dir: %q, expected: %s)\n",
 		pid, owner, expectedDir)
 
