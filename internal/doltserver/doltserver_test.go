@@ -5163,7 +5163,7 @@ func TestServerServesTownDatabasesFailsSafe(t *testing.T) {
 	// indeterminate and must surface as an error.
 	townRoot := t.TempDir()
 
-	serves, err := serverServesTownDatabases(townRoot)
+	serves, err := ServerServesTownDatabases(townRoot)
 	if err == nil {
 		t.Fatal("expected an error for an indeterminate result, got nil (KillImposters would proceed to kill)")
 	}

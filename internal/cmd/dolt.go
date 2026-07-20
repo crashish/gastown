@@ -457,10 +457,34 @@ func runDoltKillImposters(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	// A data-dir mismatch is NOT sufficient to call this an imposter. The
+	// expected path is a hardcoded default that goes stale whenever the data
+	// directory is relocated (hq-rj5kx), which is how this command came to
+	// report — and kill — the production server. Consult content evidence:
+	// does the process holding the port actually serve this town's databases?
+	serves, servesErr := doltserver.ServerServesTownDatabases(townRoot)
+	if servesErr != nil || serves {
+		fmt.Printf("%s Server on port %d has a different data-dir, but is NOT an imposter:\n",
+			style.Bold.Render("✓"), config.Port)
+		fmt.Printf("  PID:      %d\n", conflictPID)
+		fmt.Printf("  Data-dir: %s\n", conflictDataDir)
+		fmt.Printf("  Expected: %s\n", config.DataDir)
+		if servesErr != nil {
+			fmt.Printf("\n%s Could not confirm it is an imposter (%v) — refusing to kill.\n",
+				style.Warning.Render("~"), servesErr)
+		} else {
+			fmt.Printf("\n%s It IS serving this town's databases — refusing to kill.\n",
+				style.Warning.Render("~"))
+		}
+		fmt.Printf("  The expected data-dir is a stale default; see hq-rj5kx.\n")
+		return nil
+	}
+
 	fmt.Printf("Found imposter dolt server:\n")
 	fmt.Printf("  PID:      %d\n", conflictPID)
 	fmt.Printf("  Data-dir: %s\n", conflictDataDir)
 	fmt.Printf("  Expected: %s\n", config.DataDir)
+	fmt.Printf("  (does not serve this town's databases)\n")
 
 	if doltKillImpostersDry {
 		fmt.Printf("\n%s Dry-run — not killing\n", style.Warning.Render("~"))

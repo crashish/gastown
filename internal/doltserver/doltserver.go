@@ -1242,7 +1242,7 @@ func VerifyServerDataDir(townRoot string) (bool, error) {
 	return true, nil
 }
 
-// serverServesTownDatabases reports whether the Dolt server currently answering
+// ServerServesTownDatabases reports whether the Dolt server currently answering
 // on the configured port is serving this town's databases.
 //
 // This is CONTENT evidence — what the server actually serves — as opposed to
@@ -1253,7 +1253,7 @@ func VerifyServerDataDir(townRoot string) (bool, error) {
 //
 // A non-nil error means the answer could not be determined. Callers MUST treat
 // an indeterminate result as "do not kill".
-func serverServesTownDatabases(townRoot string) (bool, error) {
+func ServerServesTownDatabases(townRoot string) (bool, error) {
 	expected, err := ListDatabases(townRoot)
 	if err != nil {
 		return false, fmt.Errorf("listing expected databases: %w", err)
@@ -1318,7 +1318,7 @@ func KillImposters(townRoot string) error {
 	// An indeterminate answer also fails safe — we would rather leave a real
 	// imposter running (an annoyance, recoverable by hand) than kill production
 	// (a town-wide outage).
-	serves, servesErr := serverServesTownDatabases(townRoot)
+	serves, servesErr := ServerServesTownDatabases(townRoot)
 	if servesErr != nil {
 		fmt.Fprintf(os.Stderr,
 			"Refusing to kill dolt sql-server (PID %d, data-dir: %q, expected: %s): "+
