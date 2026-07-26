@@ -46,7 +46,8 @@ Examples:
   gt estop -r "closing laptop"          # Freeze with reason
   gt estop --rig gastown                # Freeze only gastown
   gt estop --rig beads -r "maintenance" # Freeze beads rig`,
-	RunE: runEstop,
+	Args:  cobra.NoArgs,
+	RunE:  runEstop,
 }
 
 var thawCmd = &cobra.Command{
@@ -61,7 +62,8 @@ and nudges all sessions to alert them that work can continue.
 Examples:
   gt thaw                    # Thaw everything
   gt thaw --rig gastown      # Thaw only gastown`,
-	RunE: runThaw,
+	Args:  cobra.NoArgs,
+	RunE:  runThaw,
 }
 
 func init() {
