@@ -2,6 +2,7 @@ package beads
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -817,6 +818,46 @@ func TestWrapError(t *testing.T) {
 			if err != tt.wantErr {
 				t.Errorf("wrapError(%q) = %v, want %v", tt.stderr, err, tt.wantErr)
 			}
+		}
+	}
+}
+
+// TestWrapErrorInfraNotFound guards against infrastructure failures being
+// misreported as a missing issue. Dolt emits "database not found" and
+// "table not found" when saturated or mid-restart; classifying those as
+// ErrNotFound tells callers a bead does not exist when we merely failed to
+// look it up, which silently skips agent_state writes and can send callers
+// down absent/cleanup branches for live beads.
+func TestWrapErrorInfraNotFound(t *testing.T) {
+	b := New("/test")
+
+	infra := []string{
+		"database not found: beads",
+		"error on line 1 for query select ...: table not found: issues",
+		"Error 1146 (HY000): table not found",
+		"dial tcp: lookup dolt-host: no such host",
+		"exec: \"bd\": executable file not found in $PATH",
+		"bash: bd: command not found",
+	}
+	for _, stderr := range infra {
+		err := b.wrapError(nil, stderr, []string{"show", "gt-xyz"})
+		if err == nil {
+			t.Errorf("wrapError(%q) = nil, want a real error", stderr)
+			continue
+		}
+		if errors.Is(err, ErrNotFound) {
+			t.Errorf("wrapError(%q) returned ErrNotFound; infrastructure failure must not be reported as a missing issue", stderr)
+		}
+	}
+
+	// Genuine issue misses must still map to ErrNotFound.
+	for _, stderr := range []string{
+		"Issue not found: gt-xyz",
+		"gt-xyz not found",
+		"no issue found matching gt-xyz",
+	} {
+		if err := b.wrapError(nil, stderr, []string{"show", "gt-xyz"}); !errors.Is(err, ErrNotFound) {
+			t.Errorf("wrapError(%q) = %v, want ErrNotFound", stderr, err)
 		}
 	}
 }

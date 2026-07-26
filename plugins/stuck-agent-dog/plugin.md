@@ -4,8 +4,18 @@ description = "Context-aware stuck/crashed agent detection and restart for polec
 version = 1
 
 [gate]
+# BANDAID 2026-07-25: was "5m". The gate has no concurrency guard, so it
+# dispatches a fresh dog every 5m regardless of whether the previous one is
+# still alive. Under bd/Dolt load saturation a dog takes 45+ min (the 5m
+# execution timeout below is not enforced), so dogs pile up ~9 deep, each
+# spawning bd clients against the very server they are reporting as "stuck".
+# That is a self-amplifying loop: load -> hooks time out -> agents look stuck
+# -> more dogs -> more load. Widening the gate past the observed dog lifetime
+# bounds concurrency to ~1 until the real fix lands (see hq-c06m8 / gt-4fw:
+# the bd N+1 that makes gt hook/patrol slow, and the missing concurrency guard
+# + unenforced execution timeout here).
 type = "cooldown"
-duration = "5m"
+duration = "60m"
 
 [tracking]
 labels = ["plugin:stuck-agent-dog", "category:health"]

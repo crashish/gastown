@@ -2118,6 +2118,23 @@ func (m *Manager) List() ([]*Polecat, error) {
 		names = append(names, entry.Name())
 	}
 
+	// Resolve from batched rig-wide bead state when possible (see newBeadBatch).
+	// Parallelising the per-polecat path (below) issues the same number of bd
+	// subprocesses, just concurrently — on a rig with nine polecats that is ~45
+	// simultaneous bd clients each opening a Dolt connection, which saturates the
+	// server rather than relieving it. Fetching the sets once is O(1) instead.
+	if batch := m.newBeadBatch(); batch != nil {
+		polecats := make([]*Polecat, 0, len(names))
+		for _, name := range names {
+			if !m.exists(name) {
+				continue
+			}
+			polecats = append(polecats, m.loadFromBatch(name, batch))
+		}
+		return polecats, nil
+	}
+
+	// Fallback: batch query failed, resolve per polecat.
 	// Load all polecats in parallel — each loadFromBeads call involves
 	// multiple bd/git subprocess calls that are independent per polecat.
 	results := make([]*Polecat, len(names))
@@ -2144,6 +2161,158 @@ func (m *Manager) List() ([]*Polecat, error) {
 	}
 
 	return polecats, nil
+}
+
+// beadBatch holds rig-wide bead state fetched in a constant number of queries.
+//
+// Manager.Get -> loadFromBeads issues up to five bd subprocesses per polecat: a
+// hooked List, GetAgentBead's Show, and GetAssignedIssue's three status queries
+// (open, in_progress, hooked), plus another Show for cleanup status. Each is a
+// fresh client startup and Dolt connection. Measured on an otherwise idle host,
+// an individual bd call took 16-23s under self-contention, so a rig with nine
+// polecats never completed within three minutes. Because FindIdlePolecat also
+// calls List, gt sling inherited the same stall, and since all the I/O happens
+// in child processes the parent holds no Dolt socket and simply looks hung —
+// which is what produced the spurious "Dolt is down" escalations.
+//
+// Fetching each of those sets once turns O(polecats) subprocesses into O(1).
+type beadBatch struct {
+	hooked     map[string]*beads.Issue // assignee -> first hooked issue
+	open       map[string]*beads.Issue // assignee -> first open issue
+	inProgress map[string]*beads.Issue // assignee -> first in_progress issue
+	agents     map[string]*beads.Issue // agent bead ID -> issue
+}
+
+// newBeadBatch fetches the rig-wide bead state consulted by loadFromBeads.
+// Returns nil if any query fails, so callers fall back to the per-polecat path
+// rather than resolving from partial data.
+func (m *Manager) newBeadBatch() *beadBatch {
+	byAssignee := func(status string) (map[string]*beads.Issue, error) {
+		issues, err := m.beads.List(beads.ListOptions{Status: status, Priority: -1})
+		if err != nil {
+			return nil, err
+		}
+		out := make(map[string]*beads.Issue, len(issues))
+		for _, issue := range issues {
+			if issue == nil || issue.Assignee == "" {
+				continue
+			}
+			// Keep the first match per assignee, mirroring the [0] indexing
+			// that loadFromBeads and GetAssignedIssue use.
+			if _, seen := out[issue.Assignee]; !seen {
+				out[issue.Assignee] = issue
+			}
+		}
+		return out, nil
+	}
+
+	hooked, err := byAssignee(beads.StatusHooked)
+	if err != nil {
+		return nil
+	}
+	open, err := byAssignee("open")
+	if err != nil {
+		return nil
+	}
+	inProgress, err := byAssignee("in_progress")
+	if err != nil {
+		return nil
+	}
+	// Agent beads live in the town beads dir; ForAgentBead routes there. Reading
+	// them from the rig client would silently yield no cleanup_status, which gates
+	// polecat reuse safety.
+	agents, err := m.agentBeads().ListAgentBeads()
+	if err != nil {
+		return nil
+	}
+
+	return &beadBatch{hooked: hooked, open: open, inProgress: inProgress, agents: agents}
+}
+
+// loadFromBatch resolves a polecat from pre-fetched bead state. It mirrors
+// loadFromBeads' resolution order and state derivation exactly; the only
+// difference is where the bead data comes from.
+func (m *Manager) loadFromBatch(name string, batch *beadBatch) *Polecat {
+	clonePath := m.clonePath(name)
+	branchName := m.currentBranch(name, clonePath)
+	assignee := m.assigneeID(name)
+
+	sessionRunning, sessionStale := m.polecatSessionState(name)
+	sessionDead := m.tmux != nil && (!sessionRunning || sessionStale)
+
+	base := func(state State, issue string) *Polecat {
+		return &Polecat{
+			Name:      name,
+			Rig:       m.rig.Name,
+			State:     state,
+			ClonePath: clonePath,
+			Branch:    branchName,
+			Issue:     issue,
+		}
+	}
+	working := func(issue string) *Polecat {
+		if sessionDead {
+			return base(StateStalled, issue)
+		}
+		return base(StateWorking, issue)
+	}
+
+	// Primary source: the work bead itself (status=hooked + assignee).
+	if issue, ok := batch.hooked[assignee]; ok {
+		return working(issue.ID)
+	}
+
+	// Compatibility fallback: trust a legacy hook_bead only when it resolves to a
+	// currently hooked bead for this assignee. The Show stays per-polecat because
+	// hook_bead is empty for every polecat that is not mid-handoff.
+	var fields *beads.AgentFields
+	if agentIssue, ok := batch.agents[m.agentBeadID(name)]; ok && agentIssue != nil {
+		parsed := beads.ParseAgentFields(agentIssue.Description)
+		parsed.AgentState = beads.ResolveAgentState(agentIssue.Description, agentIssue.AgentState)
+		fields = parsed
+		if fields.HookBead != "" {
+			if hookIssue, err := m.beads.Show(fields.HookBead); err == nil &&
+				isCurrentHookedIssueForAssignee(hookIssue, assignee) {
+				return working(fields.HookBead)
+			}
+		}
+	}
+
+	// Fallback: assigned issue, in GetAssignedIssue's status order.
+	issueID := ""
+	for _, byAssignee := range []map[string]*beads.Issue{batch.open, batch.inProgress, batch.hooked} {
+		if issue, ok := byAssignee[assignee]; ok {
+			issueID = issue.ID
+			break
+		}
+	}
+
+	if issueID != "" {
+		return working(issueID)
+	}
+
+	// Live session without active work is only idle if cleanup is explicitly
+	// clean; otherwise keep it non-reusable for recovery. cleanup_status comes
+	// from the batched agent bead rather than a second lookup.
+	cleanup := CleanupUnknown
+	if fields != nil && fields.CleanupStatus != "" {
+		cleanup = CleanupStatus(fields.CleanupStatus)
+	}
+	if sessionRunning && !sessionStale && !cleanup.IsSafe() {
+		return base(StateReviewNeeded, "")
+	}
+
+	return base(StateIdle, "")
+}
+
+// currentBranch resolves a polecat worktree's branch, falling back to the
+// legacy "polecat/<name>" form when the worktree cannot be read.
+func (m *Manager) currentBranch(name, clonePath string) string {
+	branchName, err := git.NewGit(clonePath).CurrentBranch()
+	if err != nil {
+		return fmt.Sprintf("polecat/%s", name)
+	}
+	return branchName
 }
 
 // FindIdlePolecat returns the first idle polecat in the rig, or nil if none.

@@ -732,6 +732,18 @@ func (b *Beads) wrapError(err error, stderr string, args []string) error {
 		return ErrNotInstalled
 	}
 
+	// Infrastructure failures also contain the substring "not found" — Dolt
+	// reports "database not found" and "table not found" when the server is
+	// saturated or mid-restart. Mapping those to ErrNotFound tells the caller
+	// "this bead does not exist" when the truth is "we failed to look it up",
+	// which is strictly worse than surfacing the error: it silently skips
+	// agent_state writes and can send callers down absent/cleanup branches for
+	// beads that are alive. Classify these as real errors first so a transient
+	// outage never masquerades as a definitive negative answer.
+	if isInfraNotFound(stderr) {
+		return fmt.Errorf("bd %s: %s", strings.Join(args, " "), stderr)
+	}
+
 	// ErrNotFound is widely used for issue lookups - acceptable exception
 	// Match various "not found" error patterns from bd
 	if strings.Contains(stderr, "not found") || strings.Contains(stderr, "Issue not found") ||
@@ -743,6 +755,29 @@ func (b *Beads) wrapError(err error, stderr string, args []string) error {
 		return fmt.Errorf("bd %s: %s", strings.Join(args, " "), stderr)
 	}
 	return fmt.Errorf("bd %s: %w", strings.Join(args, " "), err)
+}
+
+// isInfraNotFound reports whether a bd stderr string contains "not found" for an
+// infrastructure reason (database/table/host/binary) rather than a genuine issue
+// lookup miss. These arise when Dolt is saturated, restarting, or unreachable.
+func isInfraNotFound(stderr string) bool {
+	lower := strings.ToLower(stderr)
+	if !strings.Contains(lower, "not found") {
+		return false
+	}
+	for _, marker := range []string{
+		"database not found",
+		"table not found",
+		"schema not found",
+		"no such host",
+		"executable file not found",
+		"command not found",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // isSubprocessCrash returns true if the error indicates the subprocess crashed
