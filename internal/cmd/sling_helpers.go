@@ -21,6 +21,7 @@ import (
 	"github.com/steveyegge/gastown/internal/daemon"
 	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/formula"
+	"github.com/steveyegge/gastown/internal/nudge"
 	rigpkg "github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/style"
@@ -879,17 +880,43 @@ func nudgeRefinery(rigName, message string) {
 
 	// Emit a file event so the refinery's await-event unblocks instantly.
 	// This is the programmatic bridge between mq submit and the event system.
-	townRoot, _ := workspace.FindFromCwd()
-	if townRoot != "" {
+	townRoot, wsErr := workspace.FindFromCwd()
+	if townRoot == "" {
+		// Without a town root there is no durable queue to fall back on, so the
+		// wake would be best-effort only. Say so rather than failing silently.
+		fmt.Fprintf(os.Stderr,
+			"Warning: cannot locate town root; refinery wake for %s is not durable: %v\n",
+			refinerySession, wsErr)
+	} else {
 		_, _ = channelevents.EmitToTown(townRoot, "refinery", "MQ_SUBMIT", []string{
 			"source=sling",
 			"message=" + message,
 		})
-	}
 
-	t := tmux.NewTmux()
-	if err := t.NudgeSession(refinerySession, message); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to nudge refinery %s: %v\n", refinerySession, err)
+		// Deliver through the durable nudge QUEUE rather than raw send-keys.
+		//
+		// This used to call tmux NudgeSession directly, which is a one-shot,
+		// fire-and-forget wake: if the refinery happened to be mid-turn when the
+		// MR was submitted, the keystrokes interleaved into a running turn and
+		// the signal was lost permanently. The refinery then sat idle with a
+		// "ready" MR until a human noticed and nudged it by hand -- observed
+		// twice in one day, at 50min and 60min+ of dead time.
+		//
+		// Queue delivery is picked up at the agent's next turn, so a busy
+		// refinery still gets the wake. It is also non-blocking, which matters
+		// here: `gt nudge --mode=wait-idle` polls for idleness and would stall
+		// `gt mq submit` behind whatever the refinery is doing.
+		//
+		// Deliberately NOT also send-keys'ing: writing into a possibly-busy
+		// agent's input box is what made this unreliable, and doing both would
+		// double-deliver on the idle path.
+		if err := nudge.Enqueue(townRoot, refinerySession, nudge.QueuedNudge{
+			Sender:  "mq",
+			Message: message,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to queue refinery nudge %s: %v\n",
+				refinerySession, err)
+		}
 	}
 }
 
