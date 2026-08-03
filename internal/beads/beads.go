@@ -637,14 +637,69 @@ func (b *Beads) runWithStdin(stdinData []byte, args ...string) (_ []byte, retErr
 	return stripStdoutWarnings(stdout.Bytes()), nil
 }
 
+// shouldThrottleBDRead reports whether a bd invocation must serialize on the
+// global read throttle.
+//
+// The throttle exists to stop concurrent *bulk* listings from stampeding Dolt.
+// It used to cover every `bd list`, which made it a starvation engine: because
+// of the hydration N+1 a `bd list --limit=0` costs ~0.35s per row, so an
+// unbounded scan holds the flock for tens of seconds to minutes, while the
+// acquire timeout is only bdReadThrottleTimeout (5s). Any trivial lookup issued
+// in that window timed out *having done no work at all* — the query never ran,
+// it was queued. That single mechanism produced four unrelated-looking symptoms
+// (hq-nc356): `gt prime --hook` reporting a bogus "Hook query failed" at load
+// 3.88, `gt patrol report` printing usage and filing nothing at a ~29% rate,
+// `gt polecat list` timing out, and `gt compact` stalling.
+//
+// So throttle only listings that are actually capable of holding the lock that
+// long. A list carrying a selective predicate (--parent, --assignee) is scoped
+// to one molecule or one agent, and a list with a positive --limit is bounded by
+// construction; both return few rows, cost little, and cannot stampede Dolt.
+// They bypass the throttle and are no longer starved by bulk scans.
+//
+// This does NOT fix the underlying N+1 — bulk scans still cost ~0.35s/row and
+// still serialize. It removes the starvation, not the cost. Bounding the ~25
+// remaining --limit=0 callers is the other half, and is still open.
 func shouldThrottleBDRead(args []string) bool {
+	isList := false
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "-") {
 			continue
 		}
-		return arg == "list"
+		isList = arg == "list"
+		break
 	}
-	return false
+	if !isList {
+		return false
+	}
+
+	// Callers use both the joined (--assignee=x) and separated (--assignee x)
+	// flag forms; `gt mail inbox` uses the separated one, so matching only the
+	// joined form would leave the most user-visible victim still starved.
+	for i, arg := range args {
+		name, value, joined := strings.Cut(arg, "=")
+		if !joined {
+			name = arg
+			if i+1 < len(args) {
+				value = args[i+1]
+			} else {
+				value = ""
+			}
+		}
+		switch name {
+		case "--parent", "--assignee":
+			// Scoped to a single molecule/agent — inherently small.
+			if value != "" {
+				return false
+			}
+		case "--limit":
+			// --limit=0 means unbounded; any positive limit is bounded.
+			if value != "" && value != "0" {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (b *Beads) acquireBDReadThrottle(timeout time.Duration) (func(), error) {

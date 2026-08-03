@@ -4115,6 +4115,30 @@ func TestShouldThrottleBDRead(t *testing.T) {
 		{"show", []string{"show", "gt-abc"}, false},
 		{"update", []string{"update", "gt-abc", "--status=hooked"}, false},
 		{"empty", nil, false},
+
+		// Bulk scans must stay throttled — these are the ones that can hold the
+		// flock for minutes via the hydration N+1.
+		{"unbounded full scan", []string{"list", "--json", "--limit=0", "--flat"}, true},
+		{"unbounded open scan", []string{"list", "--status=open", "--json", "--limit=0", "--flat"}, true},
+		{"no-assignee is not selective", []string{"list", "--json", "--no-assignee", "--limit=0"}, true},
+
+		// Selective lookups must bypass — they are the starvation victims (hq-nc356).
+		// gt prime --hook: needs one row, was dying on a 5s throttle timeout.
+		{"assignee scoped", []string{"list", "--json", "--status=hooked", "--assignee=deacon", "--limit=0", "--flat"}, false},
+		// gt patrol report closeDescendants: was the ~29% usage-print failure.
+		{"parent scoped", []string{"list", "--json", "--status=all", "--priority=0", "--parent=hq-wisp-hdxtqm", "--limit=0", "--flat"}, false},
+		// Bounded by construction.
+		{"positive limit", []string{"list", "--json", "--limit=50", "--flat"}, false},
+		{"limit one", []string{"list", "--json", "--limit=1"}, false},
+
+		// Separated flag form — used by gt mail inbox (mail/mailbox.go) and
+		// beads.go findByTitle. Matching only the joined form missed these.
+		{"separated assignee (gt mail inbox)", []string{"list", "--json", "--assignee", "mayor/", "--limit", "0"}, false},
+		{"separated parent", []string{"list", "--json", "--parent", "hq-wisp-abc"}, false},
+		{"separated positive limit", []string{"list", "--limit", "5"}, false},
+		{"separated zero limit stays throttled", []string{"list", "--json", "--limit", "0"}, true},
+		// A trailing flag with no value must not be read as selective.
+		{"dangling assignee", []string{"list", "--json", "--assignee"}, true},
 	}
 
 	for _, tt := range tests {
