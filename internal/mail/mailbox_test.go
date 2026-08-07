@@ -704,3 +704,94 @@ func TestMailboxLegacyAtomicArchive(t *testing.T) {
 	}
 }
 
+
+// --- hq-87ttc: batched wisp queries -----------------------------------------
+//
+// listWispMessages used to issue one wisps-table query PER IDENTITY VARIANT, and
+// again for CC — two N+1 loops on the mail hot path. `gt mail inbox` timed out at
+// >90s even at low load, and the watchdog dogs misread those timeouts as
+// "beads.wisps has 0 rows / catastrophic data loss" and escalated in a loop.
+// The fix batches both into a single IN (...) per query, which means identities
+// are now interpolated as SQL string literals — hence the escaping tests below.
+
+func TestSQLStringListQuotesAndJoins(t *testing.T) {
+	got := sqlStringList([]string{"mayor/", "mayor"})
+	want := "'mayor/', 'mayor'"
+	if got != want {
+		t.Fatalf("sqlStringList() = %q, want %q", got, want)
+	}
+}
+
+func TestSQLStringListSingleValue(t *testing.T) {
+	if got := sqlStringList([]string{"deacon/"}); got != "'deacon/'" {
+		t.Fatalf("sqlStringList() = %q, want %q", got, "'deacon/'")
+	}
+}
+
+func TestEscapeSQLStringDoublesQuotes(t *testing.T) {
+	if got := escapeSQLString("o'brien"); got != "o''brien" {
+		t.Fatalf("escapeSQLString() = %q, want %q", got, "o''brien")
+	}
+}
+
+func TestEscapeSQLStringEscapesBackslash(t *testing.T) {
+	// Dolt/MySQL treat backslash as an escape character. Doubling quotes alone
+	// leaves a trailing backslash able to escape its own closing quote, so the
+	// literal runs on into the rest of the statement.
+	if got := escapeSQLString(`rig\`); got != `rig\\` {
+		t.Fatalf("escapeSQLString(%q) = %q, want %q", `rig\`, got, `rig\\`)
+	}
+}
+
+func TestEscapeSQLStringBackslashBeforeQuote(t *testing.T) {
+	// Ordering matters: escape backslashes FIRST. If quotes were doubled first,
+	// the backslash pass would then mangle the doubled quotes.
+	in := `a\'b`
+	want := `a\\''b`
+	if got := escapeSQLString(in); got != want {
+		t.Fatalf("escapeSQLString(%q) = %q, want %q", in, got, want)
+	}
+}
+
+func TestSQLStringListCannotBreakOutOfLiteral(t *testing.T) {
+	// The property that actually matters: whatever an identity contains, the
+	// rendered list must not terminate its literal early. Count unescaped quotes.
+	for _, hostile := range []string{`x' OR 1=1 --`, `x\`, `x\' OR 1=1 --`, `'`} {
+		out := sqlStringList([]string{hostile})
+		body := out[1 : len(out)-1] // strip the wrapping quotes we added
+
+		// Every quote inside the body must be doubled, and every backslash doubled.
+		for i := 0; i < len(body); i++ {
+			switch body[i] {
+			case '\'':
+				if i+1 >= len(body) || body[i+1] != '\'' {
+					t.Fatalf("sqlStringList(%q) = %q: lone quote at %d", hostile, out, i)
+				}
+				i++
+			case '\\':
+				if i+1 >= len(body) || body[i+1] != '\\' {
+					t.Fatalf("sqlStringList(%q) = %q: lone backslash at %d", hostile, out, i)
+				}
+				i++
+			}
+		}
+	}
+}
+
+func TestIdentityVariantsTownLevelIncludesLegacy(t *testing.T) {
+	// The batching only pays off because town-level identities have >1 variant;
+	// this is what used to drive the per-variant loop.
+	for identity, wantLegacy := range map[string]string{"mayor/": "mayor", "deacon/": "deacon"} {
+		m := &Mailbox{identity: identity}
+		variants := m.identityVariants()
+		var found bool
+		for _, v := range variants {
+			if v == wantLegacy {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("identityVariants() for %q = %v, missing legacy %q", identity, variants, wantLegacy)
+		}
+	}
+}

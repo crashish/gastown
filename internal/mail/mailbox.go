@@ -391,7 +391,14 @@ func (m *Mailbox) runWispSQL(beadsDir, query string) []BeadsMessage {
 }
 
 // escapeSQLString escapes single quotes for SQL string literals.
+// Backslash MUST be escaped before the quote doubling, not after — Dolt/MySQL
+// treat backslash as an escape character by default, so doubling quotes alone
+// leaves a value ending in `\` able to escape its own closing quote and run on
+// into the rest of the statement. internal/wasteland has always done both; this
+// copy did not, and hq-87ttc made it load-bearing by interpolating identities
+// into an IN (...) list rather than a single equality.
 func escapeSQLString(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
 	return strings.ReplaceAll(s, "'", "''")
 }
 
