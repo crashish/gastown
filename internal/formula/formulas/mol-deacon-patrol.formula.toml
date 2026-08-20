@@ -298,8 +298,18 @@ If a dog's tmux session is dead but worktree dirs remain, prune them.
 # For each dog directory
 for dogdir in ~/gt/deacon/dogs/*/; do
   DOG=$(basename "$dogdir")
-  # Check if dog has a live tmux session
-  if ! tmux has-session -t "dog-$DOG" 2>/dev/null; then
+  # Check if dog has a live tmux session.
+  # Session names are hq-dog-<name> (session.DogSessionName / HQPrefix="hq-").
+  # The old predicate tested "dog-$DOG", which NEVER matches, so every dog read
+  # as dead and its LIVE worktrees were force-removed on every cycle (hq-oavwo).
+  if ! tmux has-session -t "hq-dog-$DOG" 2>/dev/null; then
+    # Belt and braces: a force-remove is irreversible, so refuse to prune a dog
+    # that its own state file still says is working, even if the session lookup
+    # disagrees. Session spawn lags work_started_at by up to ~3min.
+    if [ -s "$dogdir/.dog.json" ] && grep -q '"work"[[:space:]]*:[[:space:]]*"[^"]' "$dogdir/.dog.json" 2>/dev/null; then
+      echo "SKIP prune: $DOG has no session but .dog.json still shows active work"
+      continue
+    fi
     # Dog session is dead - check for leftover worktree dirs
     for rigrepo in "$dogdir"*/; do
       [ -d "$rigrepo/.git" ] || continue
