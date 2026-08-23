@@ -1406,6 +1406,57 @@ func (b *Beads) Show(id string) (*Issue, error) {
 	return issues[0], nil
 }
 
+// ShowMany fetches several issues in ONE bd invocation.
+//
+// `bd show` accepts multiple ids and returns a JSON array, and the dominant cost
+// of any bd call is the invocation itself (~9s of client startup + Dolt connect,
+// measured 2026-08-23), not the query. Fetching N ids one at a time therefore
+// costs ~N*9s, which is what made gt polecat list unusable (hq-7mke7/hq-c06m8).
+//
+// Best-effort by design: ids that are missing, or that route to a different rig
+// database, are simply absent from the returned map. Callers must fall back to
+// Show for anything not present rather than treating absence as "no such issue".
+func (b *Beads) ShowMany(ids []string) (map[string]*Issue, error) {
+	result := make(map[string]*Issue, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+
+	// Deduplicate; callers commonly pass the same target twice.
+	seen := make(map[string]bool, len(ids))
+	args := make([]string, 0, len(ids)+2)
+	args = append(args, "show")
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		args = append(args, id)
+	}
+	if len(args) == 1 {
+		return result, nil
+	}
+	args = append(args, "--json")
+
+	out, err := b.run(args...)
+	if err != nil {
+		// A batch where every id is missing exits non-zero; that is not fatal to
+		// the caller, which will fall back per id.
+		return result, nil
+	}
+
+	var issues []*Issue
+	if err := json.Unmarshal(out, &issues); err != nil {
+		return result, nil
+	}
+	for _, issue := range issues {
+		if issue != nil && issue.ID != "" {
+			result[issue.ID] = issue
+		}
+	}
+	return result, nil
+}
+
 // FindLatestIssueByTitleAndAssignee finds the newest issue matching the given title and assignee.
 func (b *Beads) FindLatestIssueByTitleAndAssignee(title, assignee string) (*Issue, error) {
 	out, err := b.run("list", "--json", "--limit", "0", "--title", title, "--assignee", assignee)

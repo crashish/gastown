@@ -506,6 +506,37 @@ func runPolecatList(cmd *cobra.Command, args []string) error {
 		// unchanged when the bulk query is unavailable.
 		agentBeads, agentBeadsErr := bd.ListAgentBeads()
 
+		// Prime the disposition's issue lookup. reuseTargetRefs needs each
+		// polecat's ActiveMR and HookBead issue and fetched them one bd Show at a
+		// time; at ~9s per bd invocation that was the largest remaining cost in
+		// this command (hq-c06m8). Collect every id up front and fetch them in ONE
+		// `bd show id1 id2 ...`. Advisory only: a miss falls through to Show, so an
+		// empty or partial cache changes cost, never behaviour.
+		if agentBeadsErr == nil {
+			var refIDs []string
+			for _, p := range polecats {
+				issue, ok := agentBeads[polecatBeadIDForRig(r, r.Name, p.Name)]
+				if !ok || issue == nil || !beads.IsAgentBead(issue) {
+					continue
+				}
+				f := beads.ParseAgentFields(issue.Description)
+				if f == nil {
+					continue
+				}
+				if f.ActiveMR != "" {
+					refIDs = append(refIDs, f.ActiveMR)
+				}
+				if f.HookBead != "" {
+					refIDs = append(refIDs, f.HookBead)
+				}
+			}
+			if len(refIDs) > 0 {
+				if cache, err := bd.ShowMany(refIDs); err == nil && len(cache) > 0 {
+					mgr.SetIssueCache(cache)
+				}
+			}
+		}
+
 		// Track known polecat names from filesystem for zombie detection
 		knownNames := make(map[string]bool)
 		for _, p := range polecats {

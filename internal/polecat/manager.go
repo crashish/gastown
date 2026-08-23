@@ -145,6 +145,12 @@ type Manager struct {
 	namePool *NamePool
 	tmux     *tmux.Tmux
 	townRoot string // Computed once at construction; used by agentBeadID for deterministic IDs
+
+	// issueCache is an optional, request-scoped lookup installed via
+	// SetIssueCache. nil by default, so behaviour is unchanged unless a caller
+	// opts in. See SetIssueCache for why it must not be set on a long-lived
+	// Manager.
+	issueCache map[string]*beads.Issue
 }
 
 // NewManager creates a new polecat manager.
@@ -2514,20 +2520,45 @@ func countPatchUniqueCommitsForWorkstate(worktreePath, baseRef string) (int, err
 	return count, nil
 }
 
+// SetIssueCache installs a pre-fetched issue lookup used by reuseTargetRefs.
+//
+// reuseTargetRefs needs the ActiveMR and HookBead issues for each polecat, which
+// it fetched with one bd Show apiece. At ~9s per bd invocation that dominates
+// gt polecat list on any rig with several polecats (hq-c06m8). A caller that can
+// see every polecat up front should collect those ids, fetch them in one
+// ShowMany, and install the result here.
+//
+// The cache is advisory: a miss falls through to the per-id Show, so an
+// incomplete or empty cache changes cost, never behaviour. Set it only on a
+// request-scoped Manager -- do NOT install one on a long-lived Manager, where it
+// would serve stale issues.
+func (m *Manager) SetIssueCache(cache map[string]*beads.Issue) {
+	m.issueCache = cache
+}
+
+func (m *Manager) cachedShow(id string) (*beads.Issue, error) {
+	if m.issueCache != nil {
+		if issue, ok := m.issueCache[id]; ok && issue != nil {
+			return issue, nil
+		}
+	}
+	return m.beads.Show(id)
+}
+
 func (m *Manager) reuseTargetRefs(fields *beads.AgentFields) []string {
 	if fields == nil {
 		return nil
 	}
 	var refs []string
 	if fields.ActiveMR != "" {
-		if issue, err := m.beads.Show(fields.ActiveMR); err == nil {
+		if issue, err := m.cachedShow(fields.ActiveMR); err == nil {
 			if mrFields := beads.ParseMRFields(issue); mrFields != nil && mrFields.Target != "" {
 				refs = append(refs, mrFields.Target)
 			}
 		}
 	}
 	if fields.HookBead != "" {
-		if issue, err := m.beads.Show(fields.HookBead); err == nil {
+		if issue, err := m.cachedShow(fields.HookBead); err == nil {
 			refs = append(refs, attachmentTargetRefs(m.beads, issue)...)
 		}
 	}
