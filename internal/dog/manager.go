@@ -11,6 +11,7 @@ import (
 
 	"github.com/gofrs/flock"
 
+	"github.com/steveyegge/gastown/internal/claudetrust"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/rig"
@@ -32,14 +33,18 @@ type Manager struct {
 	townRoot   string
 	kennelPath string // ~/gt/deacon/dogs/
 	rigsConfig *config.RigsConfig
+	// claudeConfigPath is Claude Code's user config, where newly created dog
+	// directories are pre-registered as trusted. Overridden in tests.
+	claudeConfigPath string
 }
 
 // NewManager creates a new dog manager.
 func NewManager(townRoot string, rigsConfig *config.RigsConfig) *Manager {
 	return &Manager{
-		townRoot:   townRoot,
-		kennelPath: filepath.Join(townRoot, "deacon", "dogs"),
-		rigsConfig: rigsConfig,
+		townRoot:         townRoot,
+		kennelPath:       filepath.Join(townRoot, "deacon", "dogs"),
+		rigsConfig:       rigsConfig,
+		claudeConfigPath: claudetrust.DefaultConfigPath(),
 	}
 }
 
@@ -134,6 +139,20 @@ func (m *Manager) Add(name string) (*Dog, error) {
 			return nil, fmt.Errorf("creating worktree for rig %s: %w", rigName, err)
 		}
 		worktrees[rigName] = worktreePath
+	}
+
+	// Pre-register every directory the dog's Claude session can start in as
+	// trusted. Claude Code prompts "Is this a project you trust?" on the first
+	// interactive session in a directory and blocks until answered; trust is
+	// per-directory and is NOT inherited, so each fresh worktree faces its own
+	// prompt with no human present to answer it. An unregistered dog wedges
+	// before reading its assignment while still reporting as working (hq-ipleo).
+	//
+	// Best-effort: a dog that has to be trusted by hand is a nuisance, a dog
+	// that cannot be created at all is worse.
+	_ = claudetrust.EnsureTrusted(m.claudeConfigPath, dogPath)
+	for _, worktreePath := range worktrees {
+		_ = claudetrust.EnsureTrusted(m.claudeConfigPath, worktreePath)
 	}
 
 	// Create initial state file
