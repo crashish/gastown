@@ -530,7 +530,21 @@ func runPolecatList(cmd *cobra.Command, args []string) error {
 				Issue:          p.Issue,
 				SessionRunning: running,
 			})
-			disposition := mgr.WorkstateDispositionForPolecat(p.Name, state, p.Issue)
+			// Reuse the batched agent bead rather than letting the disposition
+			// re-fetch it per polecat (hq-7mke7 layer 3).
+			var disposition polecat.WorkstateDisposition
+			if agentBeadsErr == nil {
+				var pcFields *beads.AgentFields
+				if issue, ok := agentBeads[agentBeadID]; ok && issue != nil && beads.IsAgentBead(issue) {
+					pcFields = beads.ParseAgentFields(issue.Description)
+					if pcFields != nil {
+						pcFields.AgentState = beads.ResolveAgentState(issue.Description, issue.AgentState)
+					}
+				}
+				disposition = mgr.WorkstateDispositionForPolecatWithFields(p.Name, state, p.Issue, pcFields, nil)
+			} else {
+				disposition = mgr.WorkstateDispositionForPolecat(p.Name, state, p.Issue)
+			}
 			allPolecats = append(allPolecats, PolecatListItem{
 				Rig:                  r.Name,
 				Name:                 p.Name,

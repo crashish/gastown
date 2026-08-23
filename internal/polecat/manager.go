@@ -2350,11 +2350,24 @@ func (m *Manager) reuseDecisionForPolecat(name string, state State) SlotReuseDec
 }
 
 func (m *Manager) workstateInputForPolecat(name string, state State, issue string) WorkstateInput {
+	_, fields, err := m.agentBeads().GetAgentBead(m.agentBeadID(name))
+	return m.workstateInputForPolecatWithFields(name, state, issue, fields, err)
+}
+
+// WorkstateDispositionForPolecatWithFields is WorkstateDispositionForPolecat for
+// callers that have ALREADY fetched the agent bead. gt polecat list batches every
+// agent bead for a rig in one query; without this it would then re-fetch the same
+// bead here, one bd subprocess per polecat, which is what the batching was meant to
+// remove (hq-7mke7 / hq-c06m8 layer 3). Pass fieldsErr through so a failed fetch
+// still sets GitCheckFailed exactly as the unbatched path does.
+func (m *Manager) WorkstateDispositionForPolecatWithFields(name string, state State, issue string, fields *beads.AgentFields, fieldsErr error) WorkstateDisposition {
+	return DecideWorkstate(m.workstateInputForPolecatWithFields(name, state, issue, fields, fieldsErr))
+}
+
+func (m *Manager) workstateInputForPolecatWithFields(name string, state State, issue string, fields *beads.AgentFields, err error) WorkstateInput {
 	input := WorkstateInput{State: state, CleanupStatus: CleanupUnknown}
-	agentID := m.agentBeadID(name)
 	activeMR := ""
 	sourceHint := ""
-	_, fields, err := m.agentBeads().GetAgentBead(agentID)
 	if err != nil {
 		input.GitCheckFailed = true
 	}
