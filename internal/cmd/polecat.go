@@ -496,6 +496,16 @@ func runPolecatList(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
+		// Fetch every agent bead for this rig in ONE bd call instead of one per
+		// polecat. GetAgentBead is Show(id) + ParseAgentFields, so the loop below
+		// forked a bd subprocess per polecat; combined with the bd list read
+		// throttle (which SERIALISES bd list calls) that is what makes
+		// `gt polecat list` appear hung rather than slow, and it is the root of the
+		// recurring false "Dolt hang" dog escalations (hq-7mke7 / hq-c06m8 layer 2).
+		// A batch failure falls back to the old per-polecat path so behaviour is
+		// unchanged when the bulk query is unavailable.
+		agentBeads, agentBeadsErr := bd.ListAgentBeads()
+
 		// Track known polecat names from filesystem for zombie detection
 		knownNames := make(map[string]bool)
 		for _, p := range polecats {
@@ -503,7 +513,15 @@ func runPolecatList(cmd *cobra.Command, args []string) error {
 			cleanupStatus := ""
 			activeMR := ""
 			agentBeadID := polecatBeadIDForRig(r, r.Name, p.Name)
-			if _, fields, err := bd.GetAgentBead(agentBeadID); err == nil && fields != nil {
+			if agentBeadsErr == nil {
+				if issue, ok := agentBeads[agentBeadID]; ok && issue != nil && beads.IsAgentBead(issue) {
+					fields := beads.ParseAgentFields(issue.Description)
+					if fields != nil {
+						cleanupStatus = fields.CleanupStatus
+						activeMR = fields.ActiveMR
+					}
+				}
+			} else if _, fields, err := bd.GetAgentBead(agentBeadID); err == nil && fields != nil {
 				cleanupStatus = fields.CleanupStatus
 				activeMR = fields.ActiveMR
 			}
