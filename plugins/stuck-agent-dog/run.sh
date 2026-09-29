@@ -49,6 +49,35 @@ has_in_progress_work() {
   return 1
 }
 
+# 2nd witness for the deacon stale-heartbeat check. The heartbeat file is written
+# only at turn boundaries, so a Deacon in a long turn legitimately goes >20m
+# without a beat while actively working. A freshly-written transcript proves it
+# is progressing, not hung — which heartbeat age + has_in_progress_work alone
+# cannot tell apart (both read "possibly stuck"). Fresh transcript => alive, skip;
+# stale transcript AND stale heartbeat => escalate. (tr: killed a wave of false
+# stuck_heartbeat escalations on a live, mid-turn Deacon burning 63% CPU.)
+deacon_transcript_fresh() {
+  local dir latest age
+  dir=$(ls -dt "$HOME"/.claude/projects/*deacon 2>/dev/null | grep -viE 'dog|boot' | head -1)
+  [ -n "$dir" ] || return 1
+  latest=$(ls -t "$dir"/*.jsonl 2>/dev/null | head -1)
+  [ -n "$latest" ] || return 1
+  age=$(( $(date +%s) - $(stat -c %Y "$latest" 2>/dev/null || echo 0) ))
+  [ "$age" -lt "${DEACON_TRANSCRIPT_FRESH_S:-900}" ]
+}
+
+# Ground-truth Dolt liveness, bypassing the gt/bd client layer. `gt dolt status`,
+# `gt hook show` and `bd` all time out under load (bd-hydration N+1) while the
+# server itself answers instantly — so a client timeout is NOT a server outage.
+# A direct `select 1` on the SQL port is the only signal that distinguishes a
+# real Dolt problem from client-side slowness. Escalations that blame Dolt for a
+# gt/bd timeout MUST be gated on this returning non-zero. (tr: killed a wave of
+# false "Dolt unresponsive / server under load-saturation" escalations.)
+dolt_server_healthy() {
+  timeout 10 dolt --host "${GT_DOLT_HOST:-127.0.0.1}" --port "${GT_DOLT_PORT:-3307}" \
+    --user root --no-tls -p '' sql -q "select 1 as ok" 2>/dev/null | grep -q '\b1\b'
+}
+
 # --- Enumerate agents ---------------------------------------------------------
 
 log "=== Checking agent health ==="
@@ -154,10 +183,10 @@ else
     HEARTBEAT_AGE=$(( NOW - ${HEARTBEAT_TIME:-0} ))
 
     if [ "$HEARTBEAT_AGE" -gt 1200 ]; then
-      if [ "$DEACON_PROCESS_ALIVE" -eq 1 ] && ! has_in_progress_work; then
-        log "  SKIP: Deacon heartbeat stale (${HEARTBEAT_AGE}s old) but process is alive and no in_progress work exists"
+      if [ "$DEACON_PROCESS_ALIVE" -eq 1 ] && { ! has_in_progress_work || deacon_transcript_fresh; }; then
+        log "  SKIP: Deacon heartbeat stale (${HEARTBEAT_AGE}s old) but process is alive and either idle or transcript is fresh (actively working, not hung)"
       else
-        log "  STUCK: Deacon heartbeat stale (${HEARTBEAT_AGE}s old, >20m threshold)"
+        log "  STUCK: Deacon heartbeat stale (${HEARTBEAT_AGE}s old, >20m) AND transcript also stale — genuinely hung"
         DEACON_ISSUE="stuck_heartbeat_${HEARTBEAT_AGE}s"
       fi
     else
@@ -170,10 +199,19 @@ fi
 
 TOTAL_ISSUES=$(( ${#CRASHED[@]} + ${#STUCK[@]} ))
 if [ "$TOTAL_ISSUES" -ge 3 ]; then
-  log ""
-  log "MASS DEATH: $TOTAL_ISSUES agents down — escalating instead of restarting"
-  gt escalate "Mass agent death: $TOTAL_ISSUES agents down" \
-    -s CRITICAL 2>/dev/null || true
+  # A "mass death" under load is usually a mirage: gt hook show / bd time out
+  # (bd-hydration N+1), so live agents read as crashed/stuck. Confirm against
+  # ground truth before crying Dolt outage — if the SQL server answers a direct
+  # select, the timeouts are client-side and these are not real deaths.
+  if dolt_server_healthy; then
+    log ""
+    log "MASS DEATH SUPPRESSED: $TOTAL_ISSUES agents read as down, but Dolt server answers a direct query — treating as client-side gt/bd slowness under load, not a real outage. Not escalating."
+  else
+    log ""
+    log "MASS DEATH: $TOTAL_ISSUES agents down AND Dolt server does not answer a direct query — escalating instead of restarting"
+    gt escalate "Mass agent death: $TOTAL_ISSUES agents down (Dolt SQL server unreachable on direct query)" \
+      -s CRITICAL 2>/dev/null || true
+  fi
 fi
 
 # --- Take action --------------------------------------------------------------

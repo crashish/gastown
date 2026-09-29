@@ -252,6 +252,31 @@ For DEACON stuck (stale heartbeat):
 - Use a stable escalation fingerprint (`stuck-agent-dog:deacon:stuck-heartbeat`)
   for stale-heartbeat events; do not include the age seconds in the fingerprint.
 
+**Ground-truth discriminators — verify BEFORE any Dolt or stuck escalation:**
+
+These false-positive classes recur constantly and burn triage cycles. Do not
+escalate any of them without the direct check failing first.
+
+1. **Dolt "unresponsive" / "server under load-saturation" / "plugin blocked by
+   timeouts on gt hook / bd / gt dolt status".** These are CLIENT-side: under
+   load the gt/bd client layer (bd-hydration N+1) times out while the SQL server
+   answers instantly. `gt dolt status` timing out is NOT a server outage. Confirm
+   with a direct query — `dolt_server_healthy` in run.sh, i.e.
+   `dolt --host $GT_DOLT_HOST --port $GT_DOLT_PORT --user root --no-tls -p '' sql -q 'select 1'`.
+   **Escalate a Dolt-server problem ONLY if that direct query FAILS.** If it
+   succeeds, log the client-side slowness and let the cooldown gate handle it —
+   do not escalate, and do not report agents as crashed on the strength of a
+   `gt hook show` timeout. run.sh's mass-death check is already gated on this.
+
+2. **Deacon `stuck_heartbeat` with a fresh transcript = alive, not stuck.** The
+   heartbeat file is written only at turn boundaries, so a Deacon in a long turn
+   legitimately goes >20m without a beat while working. The 2nd witness is the
+   transcript's last-record mtime (`~/.claude/projects/*deacon/*.jsonl`): if it
+   was written in the last ~15m the Deacon is progressing, not hung. run.sh's
+   `deacon_transcript_fresh` now skips this case. A stale heartbeat is actionable
+   only when the transcript is ALSO stale. And a Deacon under an active hold is
+   NEVER a lifecycle target regardless — hand to the human.
+
 **Decision framework:**
 1. If agent is clearly dead (no process, no output) → restart
 2. If agent shows recent activity in pane → nudge first, check again next cycle
