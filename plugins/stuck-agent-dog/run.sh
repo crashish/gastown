@@ -78,6 +78,26 @@ dolt_server_healthy() {
     --user root --no-tls -p '' sql -q "select 1 as ok" 2>/dev/null | grep -q '\b1\b'
 }
 
+# --- High-load self-suppression ----------------------------------------------
+# The gastown harness runs this plugin with a 5m execution timeout and
+# notify_on_failure=high (see plugin.md). Under CPU saturation the polecat/bd
+# probes below hang past 5m, the harness kills the run, and notify_on_failure
+# fires a HIGH "Dolt unresponsive / stuck-agent-dog hung" escalation — a
+# client-side timeout, NOT a server outage. Each dog also spawns bd clients
+# against the saturated server, so the escalation amplifies the very load it
+# reports (load -> probes hang -> timeout -> escalate -> more dogs -> more load).
+# So when 1-min load exceeds the core count AND Dolt answers a direct query
+# (genuine load-saturation, not a real outage), skip this patrol cleanly: the
+# probes cannot complete while saturated, a skipped run adds no load, and it
+# self-reverts once load drops. A REAL outage (direct query fails) falls through
+# to the normal checks below. Override the threshold with STUCK_DOG_MAX_LOAD.
+_load1=$(awk '{print $1+0}' /proc/loadavg 2>/dev/null || echo 0)
+_maxload="${STUCK_DOG_MAX_LOAD:-$(nproc 2>/dev/null || echo 8)}"
+if awk -v l="$_load1" -v m="$_maxload" 'BEGIN{exit !(l>m)}' && dolt_server_healthy; then
+  log "SKIP: 1-min load ${_load1} > ${_maxload} and Dolt healthy on direct query — load-saturation, skipping patrol to avoid the hang->timeout->escalate loop"
+  exit 0
+fi
+
 # --- Enumerate agents ---------------------------------------------------------
 
 log "=== Checking agent health ==="
