@@ -23,7 +23,17 @@ digest = true
 
 [execution]
 timeout = "5m"
-notify_on_failure = true
+# notify_on_failure DISABLED 2026-10-05: under even MODERATE load (1-min ~7-11 on
+# a 12-core host) the N+1 bd/gt client path times out past this 5m limit while
+# direct Dolt SQL stays healthy, and this flag then fired a HIGH "stuck-agent-dog
+# plugin hung / Dolt unresponsive" escalation — a client-side timeout, not a real
+# failure. It produced a multi-day false-positive flood that itself added bd load
+# (load -> hang -> escalate -> more dogs). The load-guard in run.sh only catches
+# extreme spikes (>nproc), so it did not stop the moderate-load cases. Real
+# detections (mass agent death, stuck deacon) escalate via explicit `gt escalate`
+# in run.sh and are UNAFFECTED by this flag. Re-enable once the bd N+1 is fixed
+# (gt-4fw / hq-c06m8).
+notify_on_failure = false
 severity = "high"
 +++
 
