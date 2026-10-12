@@ -1,6 +1,6 @@
 +++
 name = "gitignore-reconcile"
-description = "Auto-untrack files that are tracked but match an active .gitignore rule"
+description = "Report files tracked in git but matching an active .gitignore rule (advisory; no auto-untrack)"
 version = 1
 
 [gate]
@@ -20,9 +20,12 @@ severity = "low"
 # Gitignore Reconcile
 
 Scans all rig repos for files that are tracked in git but now match an active
-`.gitignore` rule. On clean `main` branches, runs `git rm --cached` to untrack
-them and commits. On dirty branches or active polecat worktrees, creates a
-chore bead instead to avoid interference.
+`.gitignore` rule, and reports them as a chore bead. **Advisory only
+(2026-10-12):** it no longer runs `git rm --cached`, commits, or pushes —
+auto-mutating the rig repos (and gastown's origin is not writable from here)
+was removed; a human untracks intentionally. The rig-repo path resolution was
+also fixed (it had been resolving under the plugin directory and silently
+reporting success over zero repos).
 
 Root cause: `.gitignore` rules only block NEW files. Files committed before the
 rule was added continue to be tracked until manually untracked.

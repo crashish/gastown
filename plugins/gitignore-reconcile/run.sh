@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# gitignore-reconcile/run.sh — Auto-untrack files matched by .gitignore
+# gitignore-reconcile/run.sh — REPORT tracked files now matched by .gitignore
 #
-# Scans all rig repos for tracked files that now match an active .gitignore
-# rule. On clean main branches: git rm --cached + commit. On dirty branches
-# or active polecat worktrees: creates a chore bead instead.
+# Scans all rig repos for tracked files that match an active .gitignore rule and
+# reports them as a chore bead. ADVISORY ONLY (2026-10-12): it does not untrack,
+# commit, or push — that auto-mutation of rig repos was removed. A human untracks
+# intentionally. Also fixed: rig-repo path resolution (was resolving under the
+# plugin dir and silently no-op'ing while reporting success).
 
 set -euo pipefail
 
@@ -24,18 +26,26 @@ if [ -z "$RIG_NAMES" ]; then
   exit 0
 fi
 
-# Find workspace root
-WORKSPACE_ROOT=$(gt prime --field workspace 2>/dev/null || pwd)
-if [ ! -d "$WORKSPACE_ROOT" ]; then
-  WORKSPACE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-fi
+# Find the town root. GT_TOWN_ROOT is the source of truth (same as the other
+# plugins use); `gt prime --field workspace` returns empty in plugin context and
+# the old `|| pwd` fallback resolved rig paths under the PLUGIN directory, so
+# every repo SKIPped as "not a git repo" while the run still reported success.
+WORKSPACE_ROOT="${GT_TOWN_ROOT:-$(gt town root 2>/dev/null)}"
+[ -d "$WORKSPACE_ROOT" ] || WORKSPACE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
-# Build paths from rig names (standard layout: <workspace>/<rig-name>)
+# A rig's git repo is not at <root>/<rig> — it lives at <root>/<rig>/mayor/rig
+# in this town (darkdisco, trapline, gastown all do). Probe both layouts and
+# take the first that is actually a git repo, so a layout change can't silently
+# make this a no-op again.
 RIG_PATHS=""
 while IFS= read -r RIG_NAME; do
   [ -z "$RIG_NAME" ] && continue
-  RIG_PATH="$WORKSPACE_ROOT/$RIG_NAME"
-  RIG_PATHS="${RIG_PATHS:+$RIG_PATHS$'\n'}$RIG_PATH"
+  for CAND in "$WORKSPACE_ROOT/$RIG_NAME/mayor/rig" "$WORKSPACE_ROOT/$RIG_NAME"; do
+    if git -C "$CAND" rev-parse --git-dir >/dev/null 2>&1; then
+      RIG_PATHS="${RIG_PATHS:+$RIG_PATHS$'\n'}$CAND"
+      break
+    fi
+  done
 done <<< "$RIG_NAMES"
 
 if [ -z "$RIG_PATHS" ]; then
@@ -71,47 +81,21 @@ while IFS= read -r REPO_PATH; do
   FILE_COUNT=$(echo "$IGNORED_TRACKED" | wc -l | tr -d ' ')
   log "  Found $FILE_COUNT tracked+ignored file(s)"
 
+  # REPORT-ONLY (2026-10-12): this plugin used to `git rm --cached` + commit +
+  # `git push origin main` against each rig repo automatically. That is a real
+  # mutation of the rig repos — and gastown's origin is not writable from here —
+  # so it is now ADVISORY: it reports the tracked+ignored files as a chore bead
+  # and leaves the untracking to a human. Re-enabling auto-untrack is a
+  # deliberate decision, not something a janitorial patrol should do unattended.
+  REPO_NAME=$(basename "$REPO_PATH")
   CURRENT_BRANCH=$(git -C "$REPO_PATH" branch --show-current 2>/dev/null || true)
-  IS_DIRTY=$(git -C "$REPO_PATH" status --porcelain 2>/dev/null | grep -v "^??" | head -1 || true)
-  HAS_POLECATS=$(git -C "$REPO_PATH" branch 2>/dev/null | grep -E "^\+?\s+polecat/" | head -1 || true)
-
-  if [ -n "$IS_DIRTY" ] || [ -n "$HAS_POLECATS" ] || [ "$CURRENT_BRANCH" != "main" ]; then
-    REASON=""
-    [ -n "$IS_DIRTY" ]       && REASON="dirty working tree"
-    [ -n "$HAS_POLECATS" ]   && REASON="${REASON:+$REASON, }active polecat worktrees"
-    [ "$CURRENT_BRANCH" != "main" ] && REASON="${REASON:+$REASON, }not on main ($CURRENT_BRANCH)"
-    log "  SKIP: $REASON — creating chore bead"
-    REPO_NAME=$(basename "$REPO_PATH")
-    bd create "gitignore-reconcile: $REPO_NAME has $FILE_COUNT tracked+ignored file(s)" \
-      -t chore \
-      -l "plugin:gitignore-reconcile,category:git-hygiene" \
-      -d "$(printf "Repo: %s\nSkipped: %s\nFiles:\n%s" "$REPO_PATH" "$REASON" "$(echo "$IGNORED_TRACKED" | head -20)")" \
-      --silent 2>/dev/null || true
-    TOTAL_BEADS=$((TOTAL_BEADS + 1))
-    continue
-  fi
-
-  # Untrack files
-  UNTRACKED_THIS=0
-  while IFS= read -r FILE; do
-    [ -z "$FILE" ] && continue
-    log "  Untracking: $FILE"
-    git -C "$REPO_PATH" rm --cached "$FILE" 2>/dev/null && UNTRACKED_THIS=$((UNTRACKED_THIS + 1)) || true
-  done <<< "$IGNORED_TRACKED"
-
-  STAGED=$(git -C "$REPO_PATH" diff --cached --name-only 2>/dev/null || true)
-  if [ -n "$STAGED" ]; then
-    COUNT=$(echo "$STAGED" | wc -l | tr -d ' ')
-    COMMIT_MSG="chore: untrack $COUNT file(s) now matched by .gitignore
-
-Auto-committed by gitignore-reconcile plugin."
-    git -C "$REPO_PATH" commit -m "$COMMIT_MSG" \
-      --author="Gas Town <gastown@local>" 2>/dev/null && \
-      log "  Committed untracking of $COUNT file(s)" || \
-      log "  WARN: commit failed"
-    TOTAL_UNTRACKED=$((TOTAL_UNTRACKED + COUNT))
-    git -C "$REPO_PATH" push origin main 2>/dev/null || log "  WARN: push failed (committed locally)"
-  fi
+  log "  Reporting $FILE_COUNT tracked+ignored file(s) on ${CURRENT_BRANCH:-?} (advisory — no changes made)"
+  bd create "gitignore-reconcile: $REPO_NAME has $FILE_COUNT tracked+ignored file(s)" \
+    -t chore \
+    -l "plugin:gitignore-reconcile,category:git-hygiene" \
+    -d "$(printf 'Repo: %s\nBranch: %s\nThese tracked files now match .gitignore. Untrack manually if intended: git -C %s rm --cached <file>\n\n%s' "$REPO_PATH" "${CURRENT_BRANCH:-?}" "$REPO_PATH" "$(echo "$IGNORED_TRACKED" | head -40)")" \
+    --silent 2>/dev/null || true
+  TOTAL_BEADS=$((TOTAL_BEADS + 1))
 done <<< "$RIG_PATHS"
 
 # --- Report ------------------------------------------------------------------
